@@ -1,0 +1,16 @@
+edits
+Copyright 2026 the edits authors
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes third-party software:
+
+- PDFium (https://pdfium.googlesource.com/pdfium/), BSD-3-Clause and
+  Apache-2.0, with the components listed in licenses/pdfium/.
+  Binary build by pdfium-binaries (https://github.com/bblanchon/pdfium-binaries),
+  MIT, see licenses/pdfium-binaries.txt.
+- Rust crates and npm packages listed in the in-app licenses screen
+  (from M1 on; until then see Cargo.lock and package-lock.json).
+
+OCR models (from M5) come from the arabic-ocr project under CC BY-SA 4.0;
+its attribution will be reproduced here when they are added.

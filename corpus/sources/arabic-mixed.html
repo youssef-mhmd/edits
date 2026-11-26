@@ -1,0 +1,51 @@
+<!doctype html>
+<!-- Source for corpus/files/generated/arabic-mixed.pdf, printed by scripts/gen-corpus.ps1
+     with Edge headless. Original text written for this corpus. -->
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<title>نموذج عربي للاختبار</title>
+<style>
+  @page { size: A4; margin: 2cm; }
+  body { font-family: "Arial", "Segoe UI", sans-serif; font-size: 13pt; line-height: 1.7; }
+  h1 { font-size: 20pt; }
+  h2 { font-size: 15pt; margin-top: 1.5em; }
+  .naskh { font-family: "Traditional Arabic", "Simplified Arabic", serif; font-size: 16pt; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  td, th { border: 1px solid #555; padding: 4px 8px; }
+  .ltr { direction: ltr; text-align: left; }
+  .page { break-after: page; }
+</style>
+</head>
+<body>
+<section class="page">
+<h1>تقرير تجريبي عن قراءة ملفات PDF العربية</h1>
+<p>يهدف هذا المستند إلى اختبار عرض النص العربي في ملفات PDF، بما في ذلك اتصال الحروف، وترتيب الكلمات من اليمين إلى اليسار، والأرقام، والنص المختلط مع الإنجليزية مثل <span dir="ltr">PDFium</span> و<span dir="ltr">WebView2</span>.</p>
+<p>تُحفظ الحروف في ملف PDF على شكل رموز مرسومة في مواضع محددة، وليس على شكل فقرات. لذلك يحتاج البرنامج إلى إعادة بناء ترتيب النص المنطقي عند النسخ والبحث، خاصة في اللغة العربية حيث تتغير أشكال الحروف حسب موقعها في الكلمة.</p>
+<h2>أمثلة على الأرقام والتواريخ</h2>
+<p>تاريخ الإصدار: ٢٦ نوفمبر ٢٠٢٦ — أو بالأرقام الغربية: 26/11/2026. رقم الهاتف: <span dir="ltr">+966 55 123 4567</span>. المبلغ الإجمالي: ١٬٢٥٠٫٧٥ ريالاً.</p>
+<h2>نص مشكول</h2>
+<p class="naskh">بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ. العِلْمُ نُورٌ، وَالجَهْلُ ظَلَامٌ. مَنْ جَدَّ وَجَدَ، وَمَنْ زَرَعَ حَصَدَ.</p>
+<p>كلمات فيها تطويل: الســــلام عليكـــم، ومتغيرات الحروف: أحمد، إبراهيم، آمنة، مستشفى، مدرسة.</p>
+</section>
+<section class="page">
+<h2>جدول بيانات</h2>
+<table>
+  <tr><th>البند</th><th>الكمية</th><th>السعر</th><th>Notes</th></tr>
+  <tr><td>ورق طباعة</td><td>١٠</td><td>٢٥٫٠٠</td><td class="ltr">A4, 80 gsm</td></tr>
+  <tr><td>أقلام حبر</td><td>٢٤</td><td>٣٫٥٠</td><td class="ltr">Blue</td></tr>
+  <tr><td>ملفات حفظ</td><td>٥</td><td>١٢٫٠٠</td><td class="ltr">—</td></tr>
+</table>
+<h2 class="ltr" dir="ltr">An English section inside an Arabic document</h2>
+<p class="ltr" dir="ltr">This paragraph is left-to-right. It contains an Arabic phrase, <span dir="rtl">مرحبا بالعالم</span>, in the middle of an English sentence, which is the hardest case for selection order.</p>
+<h2>فقرة طويلة</h2>
+<p>في كل صباح يخرج الطلاب إلى مدارسهم حاملين كتبهم ودفاترهم، ويستقبلهم المعلمون بابتسامة، ثم تبدأ الحصص الدراسية بقراءة الدرس ومناقشته. وفي الاستراحة يتبادل الطلاب الأحاديث ويتناولون طعامهم، ثم يعودون إلى الفصول لاستكمال يومهم الدراسي. وعند الظهيرة تنتهي الحصص، ويعود الجميع إلى بيوتهم استعداداً ليوم جديد.</p>
+<p>في كل صباح يخرج الطلاب إلى مدارسهم حاملين كتبهم ودفاترهم، ويستقبلهم المعلمون بابتسامة، ثم تبدأ الحصص الدراسية بقراءة الدرس ومناقشته. وفي الاستراحة يتبادل الطلاب الأحاديث ويتناولون طعامهم، ثم يعودون إلى الفصول لاستكمال يومهم الدراسي.</p>
+</section>
+<section>
+<h2>فارسی و اردو</h2>
+<p>این یک متن آزمایشی فارسی است با حروف پ، چ، ژ، گ.</p>
+<p>یہ اردو میں ایک آزمائشی جملہ ہے جس میں ٹ، ڈ، ڑ اور ے جیسے حروف ہیں۔</p>
+</section>
+</body>
+</html>

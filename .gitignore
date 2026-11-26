@@ -1,0 +1,8 @@
+/target
+/vendor/
+/node_modules
+/ui/dist
+/bench-results/
+/corpus/files/
+*.tgz
+/src-tauri/gen/
