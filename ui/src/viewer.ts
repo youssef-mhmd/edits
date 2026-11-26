@@ -75,6 +75,9 @@ export class Viewer {
   private frame = 0;
   private lastKeep = "";
   private _zoom = 1;
+  /** While true, the zoom follows the window width. Any manual zoom turns it off. */
+  private fitting = true;
+  private lastWidth = 0;
   dpr = window.devicePixelRatio || 1;
   /** Called after every update, for the toolbar and the bench script. */
   onUpdate: () => void = () => {};
@@ -94,8 +97,27 @@ export class Viewer {
     host.append(this.scroller);
     this.widest = Math.max(...info.pages.map((p) => p.w));
     this.scroller.addEventListener("scroll", () => this.schedule(), { passive: true });
-    new ResizeObserver(() => this.schedule()).observe(this.scroller);
+    new ResizeObserver(() => this.onResize()).observe(this.scroller);
     this.fitWidth();
+  }
+
+  /** Window resized, or moved to a display with different scaling. */
+  private onResize() {
+    // Display scaling changes page pixel sizes; tiles at the old size are
+    // replaced as the new ones arrive.
+    this.dpr = window.devicePixelRatio || 1;
+    const width = this.scroller.clientWidth;
+    if (width !== this.lastWidth) {
+      this.lastWidth = width;
+      if (this.fitting) this.fitWidth();
+      else this.layout(); // keep the zoom, re-centre the pages
+    }
+    this.schedule();
+  }
+
+  /** True while the zoom follows the window width. */
+  get fitsWidth() {
+    return this.fitting;
   }
 
   destroy() {
@@ -131,15 +153,28 @@ export class Viewer {
     el.style.height = `${p.h * z}px`;
   }
 
+  /**
+   * Fits the page in view to the window width, and keeps fitting as the
+   * window resizes. Wider pages elsewhere in the file scroll sideways.
+   */
   fitWidth() {
-    const avail = Math.max(100, this.scroller.clientWidth - 2 * MARGIN - 16);
+    // clientWidth already excludes the vertical scrollbar.
+    const avail = Math.max(100, this.scroller.clientWidth - 2 * MARGIN);
+    const pageW = this.info.pages[this.tops.length ? this.currentPage() : 0].w;
     // Anchor at the top edge: the line at the top of the view stays there.
-    this.setZoom(avail / this.widest, 0, 0);
-    this.scroller.scrollLeft = 0;
+    this.applyZoom(avail / pageW, 0, 0);
+    // Pages are centred in the content; centre the view on them.
+    this.scroller.scrollLeft = (this.scroller.scrollWidth - this.scroller.clientWidth) / 2;
+    this.fitting = true;
   }
 
-  /** Changes zoom keeping the point at (`ax`, `ay`) in the viewport still. */
+  /** Sets a manual zoom, keeping the point at (`ax`, `ay`) in the viewport still. */
   setZoom(z: number, ax = this.scroller.clientWidth / 2, ay = this.scroller.clientHeight / 2) {
+    this.fitting = false;
+    this.applyZoom(z, ax, ay);
+  }
+
+  private applyZoom(z: number, ax: number, ay: number) {
     z = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z));
     const k = z / this._zoom;
     const sx = (this.scroller.scrollLeft + ax) * k - ax;

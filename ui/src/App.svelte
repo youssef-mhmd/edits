@@ -9,6 +9,7 @@
   let viewer: Viewer | null = $state(null);
   let page = $state(1);
   let zoomPct = $state(100);
+  let fitting = $state(true);
   let error = $state("");
   let fileName = $state("");
   let transport: Transport = transports.protocol;
@@ -16,6 +17,7 @@
   function refresh() {
     if (!viewer) return;
     page = viewer.currentPage() + 1;
+    fitting = viewer.fitsWidth;
     // 100% is actual size: 96 CSS px per inch, 72 points per inch.
     zoomPct = Math.round(viewer.zoom * (72 / 96) * 100);
   }
@@ -102,7 +104,14 @@
       <button onclick={() => zoomBy(0.8)} title="Zoom out (Ctrl -)">−</button>
       <span class="zoom">{zoomPct}%</span>
       <button onclick={() => zoomBy(1.25)} title="Zoom in (Ctrl +)">+</button>
-      <button onclick={() => viewer?.fitWidth()} title="Fit width (Ctrl 0)">Fit width</button>
+      <button
+        class:active={fitting}
+        aria-pressed={fitting}
+        onclick={() => viewer?.fitWidth()}
+        title="Fit width, follows the window size (Ctrl 0)"
+      >
+        Fit width
+      </button>
     {/if}
   </header>
   <main bind:this={host} onwheel={onWheel}>
@@ -159,6 +168,10 @@
   }
   button:hover {
     background: #3d3d44;
+  }
+  button.active {
+    border-color: var(--accent);
+    background: #2d3f55;
   }
   button:focus-visible {
     outline: 2px solid var(--accent);
