@@ -379,10 +379,17 @@
     const unlistenFiles = listen<string[]>("open-files", (e) => {
       for (const p of e.payload) void open(p);
     });
+    // Save where the reader is, then let the window close. This handler must
+    // never stop the close: it cannot throw, and it waits at most half a
+    // second (positions are also saved continuously while reading).
     const unlistenClose = getCurrentWindow().onCloseRequested(async () => {
       if (bench) return;
-      for (const t of tabs) if (t.viewer) remember(t.path, t.name, t.viewer.pageCount, t.viewer.viewState());
-      await flushRecent();
+      try {
+        for (const t of tabs) if (t.viewer) remember(t.path, t.name, t.viewer.pageCount, t.viewer.viewState());
+        await Promise.race([flushRecent(), new Promise((r) => setTimeout(r, 500))]);
+      } catch {
+        // Closing matters more than the last position.
+      }
     });
     return () => {
       void unlistenDrop.then((f) => f());

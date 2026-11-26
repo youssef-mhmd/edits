@@ -33,6 +33,7 @@ Benchmarks need a release build. `edits.exe --bench-out OUT.json [FILE]` runs th
 - Tabs (`ui/src/App.svelte`) hold `Viewer` instances in `$state.raw`; replace tab objects (`patchTab`), never mutate them, or derived state goes stale. A tab is deactivated while still visible and activated only once shown, or it loses its place.
 - Text (`edits-core/src/text.rs`, `reading.rs`): PDFium's character order is not reading order for Arabic, so text is rebuilt from glyph positions (marks clustered with their letter, lines by baseline, visual sort, then bidi). Run `edits-bench text-check` after touching it, and add a golden file to `tests/text` for each document fixed. Search normalisation and match mapping are in `text.rs`, with unit tests.
 - Unicode escapes written into files by tools or scripts can turn into the characters themselves (an invisible U+FEFF broke lint once); build them in code and check with `od -c`.
+- Window close: the front end's close handler saves positions, then Tauri's JS calls `destroy()`, which needs `core:window:allow-destroy` in the capability. The handler must never throw or wait long. Run `tests/close.ps1` after touching start-up, shutdown, capabilities or background threads.
 - Bookmarks and links come from `edits-core/src/nav.rs` as page fractions (top-left origin, page /Rotate applied); the viewer applies view rotation.
 - When editing files from scripts on Windows, write with `newline=''` (Python) or the file gains CRLF line endings.
 

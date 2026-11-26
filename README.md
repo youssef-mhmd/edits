@@ -33,6 +33,7 @@ target/release/edits-bench text FILE [PAGE]  # a page's text in reading order, a
 target/release/edits-bench text-check        # page text against tests/text (reading-order regressions)
 target/release/edits-bench search FILE QUERY # search timing, before and after indexing
 node scripts/ui-drive.mjs FILE tests/ui/navigation.json OUTDIR   # drive the real app, log state, take screenshots
+powershell -File tests/close.ps1             # closing the window ends the app (no file, file, indexing, searching)
 ```
 
 ## Layout
