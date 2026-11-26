@@ -61,6 +61,26 @@ export const setViewport = (doc: number, keep: [number, number][], keepWidths: n
   invoke<number>("set_viewport", { doc, keep, keepWidths });
 export const benchReport = (report: unknown) => invoke<void>("bench_report", { report });
 
+/** Where a bookmark or link goes. Positions are page fractions, 0 = top. */
+export type Target = { kind: "page"; page: number; y: number | null } | { kind: "uri"; uri: string };
+
+export interface OutlineItem {
+  title: string;
+  target: Target | null;
+  children: OutlineItem[];
+}
+
+export interface Link {
+  /** [left, top, right, bottom] as fractions of the unrotated page. */
+  rect: [number, number, number, number];
+  target: Target;
+}
+
+export const outline = (doc: number) => invoke<OutlineItem[]>("outline", { doc });
+export const pageLinks = (doc: number, page: number) => invoke<Link[]>("page_links", { doc, page });
+export const loadState = () => invoke<unknown>("load_state");
+export const saveState = (state: unknown) => invoke<void>("save_state", { state });
+
 const tileBase = navigator.userAgent.includes("Windows") ? "http://tile.localhost" : "tile://localhost";
 
 /** Thrown when the engine dropped the request because the view moved on. */

@@ -29,7 +29,9 @@ Benchmarks need a release build. `edits.exe --bench-out OUT.json [FILE]` runs th
 - `unsafe` is denied workspace-wide; `shm.rs` (WebView2 COM) is the one allowed exception.
 - PDFium keeps every object it has read (image data included) until a document closes. The render thread reopens documents when process memory passes a limit (`Engine::set_memory_limit_mb`, default 128). `edits-bench mem-previews FILE` shows engine memory while rendering every page.
 - Previews are rendered unrotated at 300 px and kept for the whole document as WebP blobs; the canvas is turned with CSS. Tiles are rendered rotated by PDFium.
-- UI tests: `node scripts/ui-drive.mjs FILE tests/ui/<scenario>.json OUTDIR` drives the release app over the DevTools protocol (WebView2 `--remote-debugging-port`), with the viewer on `window.__viewer`. Steps act first, then wait, then log/screenshot.
+- UI tests: `node scripts/ui-drive.mjs FILE tests/ui/<scenario>.json OUTDIR` drives the release app over the DevTools protocol (WebView2 `--remote-debugging-port`), with the viewer on `window.__viewer`. Steps act first, then wait, then log/screenshot. The driver sets `EDITS_STATE_DIR` (recent files go to a temp folder, never the user's) and `EDITS_NO_SINGLE_INSTANCE` (never hands off to the user's running app); `UI_SINGLE_INSTANCE=1` keeps single-instance on for `{"launch": FILE}` steps.
+- Tabs (`ui/src/App.svelte`) hold `Viewer` instances in `$state.raw`; replace tab objects (`patchTab`), never mutate them, or derived state goes stale. A tab is deactivated while still visible and activated only once shown, or it loses its place.
+- Bookmarks and links come from `edits-core/src/nav.rs` as page fractions (top-left origin, page /Rotate applied); the viewer applies view rotation.
 - When editing files from scripts on Windows, write with `newline=''` (Python) or the file gains CRLF line endings.
 
 ## Conventions

@@ -64,10 +64,12 @@ Notes: a second double-click opens a second window until tabs arrive in M1.2. Ju
 
 ### M1.2: Navigate (M)
 
-- [ ] Thumbnails panel, bookmarks panel
-- [ ] Links, internal and web
-- [ ] Tabs; a second launch opens its file as a tab in the running window
-- [ ] Recent files, restore last position
+- [x] Thumbnails panel, bookmarks panel *(F4; thumbnails reuse the background previews; bookmark tree marks the current section)*
+- [x] Links, internal and web *(web links: http, https and mailto only, opened in the default browser; Back and Forward with Alt ← / Alt →)*
+- [x] Tabs; a second launch opens its file as a tab in the running window
+- [x] Recent files, restore last position *(page, position on the page, zoom, layout and rotation)*
+
+Notes: thumbnails are shown unrotated when the view is rotated.
 
 ### M1.3: Text (M)
 

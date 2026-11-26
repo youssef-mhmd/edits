@@ -240,3 +240,95 @@ fn reopening_under_memory_pressure_keeps_rendering_correct() {
         }
     }
 }
+
+/// Three 200 x 300 pt pages with bookmarks and links:
+/// - outline: "Chapter 1" -> page 1 (with child "Section 1.1" -> top of page 2), "Chapter 2" -> page 3 at y = 150 pt
+/// - page 1: a link at the top-left to page 3 at y = 150 pt, a web link at the bottom,
+///   and a javascript: link that must be ignored.
+pub fn make_nav_pdf(name: &str) -> PathBuf {
+    let path = make_pdf(name, &[(200, 300), (200, 300), (200, 300)]);
+    let mut doc = Document::load(&path).unwrap();
+    let pages: Vec<lopdf::ObjectId> = doc.get_pages().values().copied().collect();
+    let (p1, p2, p3) = (pages[0], pages[1], pages[2]);
+    let xyz = |p: lopdf::ObjectId, y: i64| -> Object {
+        vec![p.into(), "XYZ".into(), Object::Null, y.into(), Object::Null].into()
+    };
+    let outlines = doc.new_object_id();
+    let (o1, c1, o2) = (doc.new_object_id(), doc.new_object_id(), doc.new_object_id());
+    doc.objects
+        .insert(outlines, dictionary! { "Type" => "Outlines", "First" => o1, "Last" => o2, "Count" => 2 }.into());
+    doc.objects.insert(
+        o1,
+        dictionary! {
+            "Title" => Object::string_literal("Chapter 1"), "Parent" => outlines, "Next" => o2,
+            "First" => c1, "Last" => c1, "Count" => 1,
+            "Dest" => vec![p1.into(), "Fit".into()],
+        }
+        .into(),
+    );
+    doc.objects.insert(
+        c1,
+        dictionary! { "Title" => Object::string_literal("Section 1.1"), "Parent" => o1, "Dest" => xyz(p2, 300) }.into(),
+    );
+    doc.objects.insert(o2, dictionary! { "Title" => Object::string_literal("Chapter 2"), "Parent" => outlines, "Prev" => o1, "Dest" => xyz(p3, 150) }.into());
+    let internal = doc.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Link", "Rect" => vec![20.into(), 250.into(), 80.into(), 280.into()],
+        "Dest" => xyz(p3, 150),
+    });
+    let web = doc.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Link", "Rect" => vec![100.into(), 20.into(), 180.into(), 40.into()],
+        "A" => dictionary! { "S" => "URI", "URI" => Object::string_literal("https://example.com/a") },
+    });
+    let script = doc.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Link", "Rect" => vec![100.into(), 60.into(), 180.into(), 80.into()],
+        "A" => dictionary! { "S" => "URI", "URI" => Object::string_literal("javascript:alert(1)") },
+    });
+    if let Ok(Object::Dictionary(d)) = doc.get_object_mut(p1) {
+        d.set("Annots", vec![internal.into(), web.into(), script.into()]);
+    }
+    let root = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+    if let Ok(Object::Dictionary(d)) = doc.get_object_mut(root) {
+        d.set("Outlines", outlines);
+    }
+    let out = path.with_file_name(format!("nav-{name}"));
+    doc.save(&out).unwrap();
+    out
+}
+
+#[test]
+fn reads_outline_tree() {
+    use edits_core::Target;
+    let engine = Engine::start().unwrap();
+    let doc = engine.open(make_nav_pdf("outline.pdf"), None).unwrap().doc;
+    let outline = engine.outline(doc).unwrap();
+    assert_eq!(outline.len(), 2);
+    assert_eq!(outline[0].title, "Chapter 1");
+    assert_eq!(outline[0].target, Some(Target::Page { page: 0, y: None }));
+    assert_eq!(outline[0].children.len(), 1);
+    assert_eq!(outline[0].children[0].title, "Section 1.1");
+    assert_eq!(outline[0].children[0].target, Some(Target::Page { page: 1, y: Some(0.0) }));
+    match &outline[1].target {
+        Some(Target::Page { page: 2, y: Some(y) }) => assert!((y - 0.5).abs() < 0.01, "y = {y}"),
+        other => panic!("unexpected target {other:?}"),
+    }
+    // A document without bookmarks.
+    let plain = engine.open(make_pdf("no-outline.pdf", &[(100, 100)]), None).unwrap().doc;
+    assert!(engine.outline(plain).unwrap().is_empty());
+}
+
+#[test]
+fn reads_links_and_drops_unsafe_ones() {
+    use edits_core::Target;
+    let engine = Engine::start().unwrap();
+    let doc = engine.open(make_nav_pdf("links.pdf"), None).unwrap().doc;
+    let links = engine.links(doc, 0, 0).unwrap();
+    assert_eq!(links.len(), 2, "{links:?}");
+    let internal = links.iter().find(|l| matches!(l.target, Target::Page { .. })).unwrap();
+    // Rect 20..80 x 250..280 pt (from the bottom) on a 200 x 300 page.
+    let [l, t, r, b] = internal.rect;
+    assert!((l - 0.10).abs() < 0.01 && (r - 0.40).abs() < 0.01, "{:?}", internal.rect);
+    assert!((t - 20.0 / 300.0).abs() < 0.01 && (b - 50.0 / 300.0).abs() < 0.01, "{:?}", internal.rect);
+    assert!(matches!(internal.target, Target::Page { page: 2, y: Some(y) } if (y - 0.5).abs() < 0.01));
+    assert!(links.iter().any(|l| l.target == Target::Uri { uri: "https://example.com/a".into() }));
+    assert!(engine.links(doc, 1, 0).unwrap().is_empty());
+}

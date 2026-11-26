@@ -53,6 +53,18 @@ body,
   transform-origin: center;
 }
 
+.page > a.link {
+  position: absolute;
+  z-index: 2;
+  cursor: pointer;
+  border-radius: 2px;
+}
+
+.page > a.link:hover {
+  background: rgb(74 144 217 / 0.15);
+  outline: 1px solid rgb(74 144 217 / 0.6);
+}
+
 .page-error {
   position: absolute;
   inset: 0;

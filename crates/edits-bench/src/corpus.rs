@@ -254,6 +254,106 @@ fn damaged_pages() -> Document {
     b.finish()
 }
 
+/// 60 pages: page 1 is a contents page whose lines link to each chapter;
+/// bookmarks hold chapters (Latin and Arabic titles) with sections nested
+/// under them; page 1 also has a web link.
+fn navigation() -> Document {
+    let mut b = Builder::new();
+    let chapters = 6;
+    let per = 10;
+    let mut ids = Vec::new();
+    for _ in 0..chapters * per {
+        ids.push(b.page(A4.0, A4.1, 0, vec![], vec![]));
+    }
+    // Contents lines on page 1, drawn over the body text.
+    let mut ops = vec![Operation::new("BT", vec![]), Operation::new("Tf", vec!["F1".into(), 16.into()])];
+    let mut annots = Vec::new();
+    for c in 0..chapters {
+        let y = 700 - c as i64 * 40;
+        ops.push(Operation::new("Tm", vec![1.into(), 0.into(), 0.into(), 1.into(), 300.into(), y.into()]));
+        ops.push(Operation::new(
+            "Tj",
+            vec![Object::string_literal(format!("Chapter {} ...... page {}", c + 1, c * per + 1))],
+        ));
+        let target = ids[c * per];
+        annots.push(b.doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "Link", "Border" => vec![0.into(), 0.into(), 1.into()],
+            "Rect" => vec![295.into(), (y - 6).into(), 560.into(), (y + 18).into()],
+            "Dest" => vec![target.into(), "XYZ".into(), Object::Null, 842.into(), Object::Null],
+        }));
+    }
+    ops.push(Operation::new("Tm", vec![1.into(), 0.into(), 0.into(), 1.into(), 300.into(), 400.into()]));
+    ops.push(Operation::new("Tj", vec![Object::string_literal("Project website (web link)")]));
+    ops.push(Operation::new("ET", vec![]));
+    annots.push(b.doc.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Link", "Border" => vec![0.into(), 0.into(), 1.into()],
+        "Rect" => vec![295.into(), 394.into(), 560.into(), 418.into()],
+        "A" => dictionary! { "S" => "URI", "URI" => Object::string_literal("https://example.com/") },
+    }));
+    let toc = b.doc.add_object(Stream::new(dictionary! {}, Content { operations: ops }.encode().expect("encode")));
+    if let Ok(Object::Dictionary(d)) = b.doc.get_object_mut(ids[0]) {
+        let body = d.get(b"Contents").ok().and_then(|c| c.as_reference().ok());
+        let mut contents: Vec<Object> = body.into_iter().map(Object::from).collect();
+        contents.push(toc.into());
+        d.set("Contents", contents);
+        d.set("Annots", annots.into_iter().map(Object::from).collect::<Vec<_>>());
+    }
+    // Outline: chapters with three sections each.
+    let outlines = b.doc.new_object_id();
+    let chapter_ids: Vec<ObjectId> = (0..chapters).map(|_| b.doc.new_object_id()).collect();
+    for (c, &cid) in chapter_ids.iter().enumerate() {
+        let title = if c % 2 == 0 { format!("Chapter {}", c + 1) } else { format!("الفصل {}", c + 1) };
+        let sections: Vec<ObjectId> = (0..3).map(|_| b.doc.new_object_id()).collect();
+        for (s, &sid) in sections.iter().enumerate() {
+            let mut d = dictionary! {
+                "Title" => Object::String(utf16be(&format!("Section {}.{}", c + 1, s + 1)), lopdf::StringFormat::Hexadecimal),
+                "Parent" => cid,
+                "Dest" => vec![ids[c * per + s * 3 + 1].into(), "XYZ".into(), Object::Null, 600.into(), Object::Null],
+            };
+            if s > 0 {
+                d.set("Prev", sections[s - 1]);
+            }
+            if s < 2 {
+                d.set("Next", sections[s + 1]);
+            }
+            b.doc.objects.insert(sid, d.into());
+        }
+        let mut d = dictionary! {
+            "Title" => Object::String(utf16be(&title), lopdf::StringFormat::Hexadecimal),
+            "Parent" => outlines, "First" => sections[0], "Last" => sections[2], "Count" => -3,
+            "Dest" => vec![ids[c * per].into(), "Fit".into()],
+        };
+        if c > 0 {
+            d.set("Prev", chapter_ids[c - 1]);
+        }
+        if c + 1 < chapters {
+            d.set("Next", chapter_ids[c + 1]);
+        }
+        b.doc.objects.insert(cid, d.into());
+    }
+    b.doc.objects.insert(outlines, dictionary! {
+        "Type" => "Outlines", "First" => chapter_ids[0], "Last" => chapter_ids[chapters - 1], "Count" => chapters as i64,
+    }.into());
+    let mut doc = b.finish();
+    if let Ok(root) = doc.trailer.get(b"Root").and_then(Object::as_reference)
+        && let Ok(Object::Dictionary(d)) = doc.get_object_mut(root)
+    {
+        d.set("Outlines", outlines);
+        d.set("PageMode", "UseOutlines");
+    }
+    doc.compress();
+    doc
+}
+
+/// PDF text string in UTF-16BE with a byte-order mark.
+fn utf16be(s: &str) -> Vec<u8> {
+    let mut out = vec![0xFE, 0xFF];
+    for u in s.encode_utf16() {
+        out.extend_from_slice(&u.to_be_bytes());
+    }
+    out
+}
+
 fn acroform() -> Document {
     let mut b = Builder::new();
     let page = b.page(A4.0, A4.1, 0, vec![], vec![]);
@@ -334,6 +434,7 @@ pub fn generate(dir: &Path, large: bool) -> Res<()> {
     save(mixed_sizes(), &dir, "mixed-sizes-rotated.pdf")?;
     save(acroform(), &dir, "form-acroform.pdf")?;
     save(damaged_pages(), &dir, "damaged-pages-2-to-5.pdf")?;
+    save(navigation(), &dir, "navigation-60p.pdf")?;
     save(encrypt(text_doc(3), "edits", "owner")?, &dir, "encrypted-aes256-user-edits.pdf")?;
     save(encrypt(text_doc(3), "", "owner")?, &dir, "encrypted-aes256-owner-only.pdf")?;
 

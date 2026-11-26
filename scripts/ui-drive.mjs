@@ -6,13 +6,22 @@
 import { spawn } from "node:child_process";
 import { writeFileSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
 
 const [pdf, stepsFile, outDir] = process.argv.slice(2);
 const steps = JSON.parse(readFileSync(stepsFile, "utf8"));
 const port = 9333;
 const exe = fileURLToPath(new URL("../target/release/edits.exe", import.meta.url));
-const app = spawn(exe, pdf ? [pdf] : [], {
-  env: { ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}` },
+const stateDir = process.env.EDITS_STATE_DIR ?? `${tmpdir()}/edits-ui-test-state`;
+const app = spawn(exe, pdf ? pdf.split("|") : [], {
+  env: {
+    ...process.env,
+    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}`,
+    // Never hand off to, or save into, the user's own running app.
+    // UI_SINGLE_INSTANCE=1 keeps it on, to test second launches ({"launch": FILE} steps).
+    ...(process.env.UI_SINGLE_INSTANCE ? {} : { EDITS_NO_SINGLE_INSTANCE: "1" }),
+    EDITS_STATE_DIR: stateDir,
+  },
   stdio: "ignore",
 });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -57,10 +66,18 @@ for (const s of steps) {
     await evaluate(`(() => { const el = document.querySelector(${JSON.stringify(s.select[0])});
       el.value = ${JSON.stringify(s.select[1])}; el.dispatchEvent(new Event('change', {bubbles: true})); })()`);
   if (s.key) {
-    const mods = (s.ctrl ? 2 : 0) | (s.shift ? 8 : 0);
+    const mods = (s.alt ? 1 : 0) | (s.ctrl ? 2 : 0) | (s.shift ? 8 : 0);
     const base = { key: s.key, code: s.code ?? s.key, modifiers: mods, windowsVirtualKeyCode: s.vk ?? 0 };
     await send("Input.dispatchKeyEvent", { type: "keyDown", ...base });
     await send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
+  }
+  if (s.launch) {
+    // A second launch, as a double-click in Explorer would do.
+    const second = spawn(exe, [s.launch], {
+      env: { ...process.env, EDITS_STATE_DIR: stateDir },
+      stdio: "ignore",
+    });
+    await new Promise((r) => second.on("exit", r));
   }
   if (s.wait) await sleep(s.wait);
   if (s.log) console.log(s.log, "=>", JSON.stringify(await evaluate(s.log)));

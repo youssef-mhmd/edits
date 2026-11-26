@@ -1,0 +1,13 @@
+[
+  {
+    "launch": "D:\\projects\\edits\\corpus\\files\\generated\\arabic-mixed.pdf",
+    "wait": 1500,
+    "log": "[...document.querySelectorAll('.tab .tab-name')].map(t => t.textContent + (t.parentElement.classList.contains('active') ? ' *' : ''))",
+    "shot": "second-launch"
+  },
+  {
+    "launch": "D:\\projects\\edits\\corpus\\files\\generated\\arabic-mixed.pdf",
+    "wait": 1000,
+    "log": "document.querySelectorAll('.tab').length"
+  }
+]

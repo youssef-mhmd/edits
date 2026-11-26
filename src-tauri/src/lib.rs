@@ -5,8 +5,10 @@
 //! on the engine's queue; the response body is raw RGBA.
 
 mod bench;
+mod nav;
 #[cfg(windows)]
 mod shm;
+mod state;
 mod tiles;
 
 use std::path::PathBuf;
@@ -14,6 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use edits_core::{DocId, DocInfo, Engine, EngineError};
 use serde::Serialize;
+use tauri::{Emitter, Manager};
 
 /// Command-line options. `edits [--bench-out FILE] [PDF]`
 #[derive(Debug, Default, Clone)]
@@ -30,7 +33,9 @@ impl Args {
             if a == "--bench-out" {
                 args.bench_out = it.next().map(PathBuf::from);
             } else if args.file.is_none() {
-                args.file = Some(PathBuf::from(a));
+                // Absolute, so the same file opened twice is recognised as one tab.
+                let p = PathBuf::from(a);
+                args.file = Some(std::path::absolute(&p).unwrap_or(p));
             }
         }
         args
@@ -120,6 +125,24 @@ fn set_viewport(state: tauri::State<'_, AppState>, doc: DocId, keep: Vec<[u32; 2
         .cancel_where(|s| s.doc == doc && !keep.contains(&[s.page, s.page_w]) && !keep_widths.contains(&s.page_w))
 }
 
+/// PDF paths from another launch's command line, made absolute.
+fn files_from_argv(argv: &[String], cwd: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut skip_next = false;
+    for a in argv.iter().skip(1) {
+        if skip_next {
+            skip_next = false;
+        } else if a == "--bench-out" {
+            skip_next = true;
+        } else if !a.starts_with("--") {
+            let p = PathBuf::from(a);
+            let p = if p.is_absolute() { p } else { PathBuf::from(cwd).join(p) };
+            out.push(p.display().to_string());
+        }
+    }
+    out
+}
+
 pub fn run() {
     let main_unix_ms = unix_ms();
     let args = Args::parse();
@@ -141,8 +164,24 @@ pub fn run() {
     let tile_engine = engine.clone();
     let setup_ms = Arc::new(Mutex::new(0.0));
     let setup_ms_hook = setup_ms.clone();
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+    // One window: a second launch hands its files to the running app as
+    // tabs. Bench runs and UI tests (EDITS_NO_SINGLE_INSTANCE) stay separate.
+    if args.bench_out.is_none() && std::env::var_os("EDITS_NO_SINGLE_INSTANCE").is_none() {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            let files = files_from_argv(&argv, &cwd);
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+            if !files.is_empty() {
+                let _ = app.emit("open-files", files);
+            }
+        }));
+    }
+    builder
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .register_asynchronous_uri_scheme_protocol("tile", move |_ctx, request, responder| {
             tiles::handle(&tile_engine, request, responder);
         })
@@ -156,6 +195,10 @@ pub fn run() {
             #[cfg(windows)]
             shm::render_tile_shm,
             bench::bench_report,
+            nav::outline,
+            nav::page_links,
+            state::load_state,
+            state::save_state,
         ])
         .setup(move |_app| {
             *setup_ms_hook.lock().unwrap_or_else(|e| e.into_inner()) = unix_ms();

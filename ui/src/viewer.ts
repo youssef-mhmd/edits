@@ -11,7 +11,17 @@
 // Page edges are snapped to whole device pixels and each page is exactly as
 // many device pixels as its tiles, so tiles are never resampled (no blur).
 
-import { Cancelled, setViewport, type DocInfo, type RenderSpec, type TileData, type Transport } from "./api";
+import {
+  Cancelled,
+  pageLinks,
+  setViewport,
+  type DocInfo,
+  type Link,
+  type RenderSpec,
+  type Target,
+  type TileData,
+  type Transport,
+} from "./api";
 
 const TILE = 512; // device pixels
 const PREVIEW_W = 300; // device pixels, unrotated page width
@@ -115,7 +125,39 @@ interface PageView {
   preview: HTMLCanvasElement | null;
   tiles: Map<string, HTMLCanvasElement>; // key -> canvas attached to el
   error: HTMLDivElement | null;
+  links: HTMLElement[];
 }
+
+/** A reading position: page index and how far down it the view's top edge is (0 to 1). */
+export interface Position {
+  page: number;
+  y: number;
+}
+
+/** Everything needed to reopen a document where the reader left it. */
+export interface ViewState extends Position {
+  zoom: number;
+  fit: FitMode;
+  mode: ViewMode;
+  rotation: number;
+  rtl: boolean;
+}
+
+/** Maps a rectangle in unrotated page fractions to the page turned by `q` quarter turns. */
+function rotateRect([l, t, r, b]: number[], q: number): number[] {
+  switch (q) {
+    case 1:
+      return [1 - b, l, 1 - t, r];
+    case 2:
+      return [1 - r, 1 - b, 1 - l, 1 - t];
+    case 3:
+      return [t, 1 - r, b, 1 - l];
+    default:
+      return [l, t, r, b];
+  }
+}
+
+const MAX_HISTORY = 100;
 
 /** Where a page sits: CSS px from the content's top-left, snapped to device pixels. */
 interface Box {
@@ -157,7 +199,18 @@ export class Viewer {
   private lastWidth = 0;
   private lastHeight = 0;
   private wheelCooldown = 0;
+  private active = true;
+  /** Where a hidden tab was, to return to when it is shown. */
+  private hiddenAt: Position | null = null;
+  private links = new Map<number, Link[] | "loading">();
+  private back: Position[] = [];
+  private forward: Position[] = [];
+  private blobWaiters = new Map<number, ((b: Blob) => void)[]>();
   dpr = window.devicePixelRatio || 1;
+  /** Called when the reader clicks a link to a web address. */
+  onExternalLink: (uri: string) => void = () => {};
+  /** Called when a page's compressed preview becomes available (thumbnails). */
+  onPreviewStored: (page: number) => void = () => {};
   /** Called after every update, for the toolbar and the bench script. */
   onUpdate: () => void = () => {};
   /** Called when a tile arrives. */
@@ -184,7 +237,148 @@ export class Viewer {
 
   destroy() {
     cancelAnimationFrame(this.frame);
+    this.active = false;
     this.scroller.remove();
+  }
+
+  /**
+   * Hidden tabs stop rendering: queued renders are cancelled and nothing new
+   * is requested until the tab is shown again.
+   */
+  setActive(active: boolean) {
+    if (active === this.active) return;
+    this.active = active;
+    if (!active) {
+      this.hiddenAt = this.position();
+      cancelAnimationFrame(this.frame);
+      this.frame = 0;
+      this.lastKeep = "";
+      void setViewport(this.info.doc, [], []);
+    } else {
+      // The window may have changed size while hidden: fit again, then go
+      // back to exactly where the reader was.
+      const at = this.hiddenAt;
+      this.hiddenAt = null;
+      this.lastWidth = this.scroller.clientWidth;
+      this.lastHeight = this.scroller.clientHeight;
+      this.refit(0, 0);
+      if (at) this.goTo(at.page, at.y);
+      this.schedule();
+    }
+  }
+
+  // ------------------------------------------------------------ positions
+
+  /** Where the top edge of the view is. */
+  position(): Position {
+    if (this.hiddenAt) return this.hiddenAt;
+    const page = this.currentPage();
+    const b = this.boxes.get(page);
+    if (!b) return { page, y: 0 };
+    const y = (this.scroller.scrollTop - b.y) / (b.ph / this.dpr);
+    return { page, y: Math.min(1, Math.max(0, y)) };
+  }
+
+  /** Scrolls so that `y` (0 = top) of page `page` is at the top of the view. */
+  goTo(page: number, y = 0) {
+    this.goToPage(page);
+    const b = this.boxes.get(page);
+    if (b && y > 0) this.scroller.scrollTop = b.y + y * (b.ph / this.dpr) - MARGIN;
+    this.schedule();
+  }
+
+  /** Like `goTo`, and remembered so Back returns here. */
+  navigate(page: number, y = 0) {
+    this.back.push(this.position());
+    if (this.back.length > MAX_HISTORY) this.back.shift();
+    this.forward = [];
+    this.goTo(page, y);
+  }
+
+  /** Follows a bookmark or link target. */
+  follow(t: Target) {
+    if (t.kind === "uri") {
+      this.onExternalLink(t.uri);
+      return;
+    }
+    // A vertical position survives a half turn; quarter turns lose it.
+    const y = t.y === null ? 0 : this._rotation === 0 ? t.y : this._rotation === 2 ? 1 - t.y : 0;
+    this.navigate(t.page, Math.max(0, y - 0.02));
+  }
+
+  get canGoBack() {
+    return this.back.length > 0;
+  }
+  get canGoForward() {
+    return this.forward.length > 0;
+  }
+
+  goBack() {
+    const p = this.back.pop();
+    if (!p) return;
+    this.forward.push(this.position());
+    this.goTo(p.page, p.y);
+  }
+
+  goForward() {
+    const p = this.forward.pop();
+    if (!p) return;
+    this.back.push(this.position());
+    this.goTo(p.page, p.y);
+  }
+
+  viewState(): ViewState {
+    return {
+      ...this.position(),
+      zoom: this._zoom,
+      fit: this._fit,
+      mode: this._mode,
+      rotation: this._rotation,
+      rtl: this._rtl,
+    };
+  }
+
+  /** Restores a saved view; values that do not fit this document are ignored. */
+  restore(s: Partial<ViewState>) {
+    if (s.mode === "continuous" || s.mode === "single" || s.mode === "two-page") this._mode = s.mode;
+    if (typeof s.rotation === "number") this._rotation = ((Math.round(s.rotation) % 4) + 4) % 4;
+    if (typeof s.rtl === "boolean") this._rtl = s.rtl;
+    if (s.fit === "width" || s.fit === "page" || s.fit === "none") this._fit = s.fit;
+    if (this._fit === "none" && typeof s.zoom === "number" && Number.isFinite(s.zoom)) {
+      this._zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, s.zoom));
+    }
+    const page = typeof s.page === "number" ? Math.max(0, Math.min(this.info.page_count - 1, s.page)) : 0;
+    this.single = page;
+    this.buildRows();
+    this.layout();
+    const z = this.fitZoom();
+    if (z !== null) this._zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z));
+    this.layout();
+    this.goTo(page, typeof s.y === "number" ? Math.min(1, Math.max(0, s.y)) : 0);
+    if (this._fit !== "none") {
+      this.scroller.scrollLeft = (this.scroller.scrollWidth - this.scroller.clientWidth) / 2;
+    }
+  }
+
+  // ------------------------------------------------------------ thumbnails
+
+  /** The compressed preview of page `i`, rendering it first if needed. */
+  previewBlob(i: number): Promise<Blob> {
+    const b = this.previewBlobs.get(i);
+    if (b && b.size > 0) return Promise.resolve(b);
+    return new Promise((resolve) => {
+      const list = this.blobWaiters.get(i) ?? [];
+      list.push(resolve);
+      this.blobWaiters.set(i, list);
+      const key = `p${i}`;
+      if (!this.inflight.has(key) && !this.errors.has(i)) {
+        this.request(key, this.previewSpec(i), PRIO_PREVIEW_NEAR, (c) => {
+          const show = this.views.has(i) && !this.views.get(i)!.preview;
+          if (show) this.keepPreview(i, c);
+          this.compress(i, c, !show);
+        });
+      }
+    });
   }
 
   // ---------------------------------------------------------------- state
@@ -367,6 +561,7 @@ export class Viewer {
   }
 
   private place(i: number, v: PageView) {
+    this.placeLinks(i, v);
     const b = this.boxes.get(i)!;
     const st = v.el.style;
     st.left = `${b.x}px`;
@@ -428,6 +623,8 @@ export class Viewer {
 
   /** Window resized, or moved to a display with different scaling. */
   private onResize() {
+    // A hidden tab reports a zero size; fitting to that would lose the place.
+    if (!this.active || this.scroller.clientWidth === 0) return;
     const dpr = window.devicePixelRatio || 1;
     const dprChanged = dpr !== this.dpr;
     this.dpr = dpr;
@@ -548,6 +745,7 @@ export class Viewer {
   }
 
   private update() {
+    if (!this.active) return;
     const near = new Set(this.pagesInView(this.scroller.clientHeight));
     const visible = this.pagesInView(0);
 
@@ -561,12 +759,13 @@ export class Viewer {
       if (!this.views.has(i)) {
         const el = document.createElement("div");
         el.className = "page";
-        const v: PageView = { el, preview: null, tiles: new Map(), error: null };
+        const v: PageView = { el, preview: null, tiles: new Map(), error: null, links: [] };
         this.views.set(i, v);
         this.place(i, v);
         this.content.append(el);
         const err = this.errors.get(i);
         if (err) this.showError(v, err);
+        this.loadLinks(i);
       }
     }
 
@@ -665,7 +864,12 @@ export class Viewer {
   private compress(i: number, c: HTMLCanvasElement, free = false) {
     c.toBlob(
       (b) => {
-        if (b && b.size > 0) this.previewBlobs.set(i, b);
+        if (b && b.size > 0) {
+          this.previewBlobs.set(i, b);
+          this.blobWaiters.get(i)?.forEach((resolve) => resolve(b));
+          this.blobWaiters.delete(i);
+          this.onPreviewStored(i);
+        }
         if (free) c.width = c.height = 0;
       },
       "image/webp",
@@ -723,6 +927,47 @@ export class Viewer {
     st.left = `${w / 2}px`;
     st.top = `${h / 2}px`;
     st.transform = `translate(-50%, -50%) rotate(${this._rotation * 90}deg)`;
+  }
+
+  // ----------------------------------------------------------------- links
+
+  /** Loads page `i`'s links once, then shows them on its view. */
+  private loadLinks(i: number) {
+    if (this.links.has(i)) return;
+    this.links.set(i, "loading");
+    pageLinks(this.info.doc, i)
+      .then((l) => this.links.set(i, l))
+      .catch(() => this.links.set(i, []))
+      .finally(() => {
+        const v = this.views.get(i);
+        if (v) this.placeLinks(i, v);
+      });
+  }
+
+  /** Lays the clickable link areas over page `i`, turned with the view. */
+  private placeLinks(i: number, v: PageView) {
+    const links = this.links.get(i);
+    if (!Array.isArray(links)) return;
+    for (const el of v.links) el.remove();
+    v.links = links.map((link) => {
+      const [l, t, r, b] = rotateRect(link.rect, this._rotation);
+      const a = document.createElement("a");
+      a.className = "link";
+      a.tabIndex = -1;
+      a.style.left = `${l * 100}%`;
+      a.style.top = `${t * 100}%`;
+      a.style.width = `${(r - l) * 100}%`;
+      a.style.height = `${(b - t) * 100}%`;
+      const target = link.target;
+      a.title = target.kind === "uri" ? target.uri : `Go to page ${target.page + 1}`;
+      a.href = target.kind === "uri" ? target.uri : "#";
+      a.addEventListener("click", (e) => {
+        e.preventDefault();
+        this.follow(target);
+      });
+      v.el.append(a);
+      return a;
+    });
   }
 
   // ----------------------------------------------------------------- tiles

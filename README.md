@@ -17,7 +17,7 @@ npx tauri build                # installer in target/release/bundle/nsis/
 
 Open a file with the Open button (Ctrl O), by dropping it on the window, with `edits.exe path\to\file.pdf`, or after installing, from "Open with" in Explorer.
 
-Keys: Ctrl + / Ctrl − / Ctrl + wheel zoom; Ctrl 0 fit width; Ctrl 2 fit page; Ctrl 1 actual size; Ctrl Shift + / Ctrl Shift − rotate; Ctrl G go to page; Page Up/Down, Space, Home, End; ← → turn pages in single and two-page views.
+Keys: Ctrl + / Ctrl − / Ctrl + wheel zoom; Ctrl 0 fit width; Ctrl 2 fit page; Ctrl 1 actual size; Ctrl Shift + / Ctrl Shift − rotate; Ctrl G go to page; Page Up/Down, Space, Home, End; ← → turn pages in single and two-page views; Alt ← / Alt → back and forward after links and bookmarks; F4 pages and bookmarks panel; Ctrl Tab / Ctrl Shift Tab switch tabs; Ctrl W close tab.
 
 ## Tests and benchmarks
 

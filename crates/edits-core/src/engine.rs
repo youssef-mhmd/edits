@@ -148,10 +148,14 @@ pub struct Tile {
 
 type Reply<T> = Box<dyn FnOnce(Result<T, EngineError>) + Send>;
 
+/// Runs on the render thread with the open document, or the error if there is none.
+type Call = Box<dyn FnOnce(Result<&mut OpenDoc, EngineError>) + Send>;
+
 enum Job {
     Open { doc: DocId, path: PathBuf, password: Option<String>, reply: Reply<DocInfo> },
     Close { doc: DocId },
     Render { spec: RenderSpec, submitted: Instant, reply: Reply<Tile> },
+    Call { doc: DocId, call: Call },
 }
 
 impl Job {
@@ -159,6 +163,7 @@ impl Job {
         match self {
             Job::Open { reply, .. } => reply(Err(err)),
             Job::Render { reply, .. } => reply(Err(err)),
+            Job::Call { call, .. } => call(Err(err)),
             Job::Close { .. } => {}
         }
     }
@@ -303,6 +308,36 @@ impl Engine {
             let _ = tx.send(r);
         });
         rx.recv().map_err(|_| EngineError::Stopped)?
+    }
+
+    /// Runs `f` on the render thread with document `doc` and waits for its result.
+    fn call<R: Send + 'static>(
+        &self,
+        doc: DocId,
+        priority: Priority,
+        f: impl FnOnce(&mut OpenDoc) -> Result<R, EngineError> + Send + 'static,
+    ) -> Result<R, EngineError> {
+        let (tx, rx) = mpsc::channel();
+        let call: Call = Box::new(move |od| {
+            let _ = tx.send(od.and_then(f));
+        });
+        self.submit(priority, |_| Job::Call { doc, call });
+        rx.recv().map_err(|_| EngineError::Stopped)?
+    }
+
+    /// The document's bookmarks. Empty if it has none.
+    pub fn outline(&self, doc: DocId) -> Result<Vec<crate::nav::OutlineItem>, EngineError> {
+        self.call(doc, CONTROL_PRIORITY - 1, |od| Ok(crate::nav::outline(&od.doc)))
+    }
+
+    /// The links on page `page`, with internal targets resolved to pages.
+    pub fn links(&self, doc: DocId, page: u32, priority: Priority) -> Result<Vec<crate::nav::Link>, EngineError> {
+        self.call(doc, priority, move |od| {
+            od.page(page)?;
+            // Borrow the cached page and the document together.
+            let p = &od.pages.last().expect("page() just cached it").1;
+            Ok(crate::nav::links(&od.doc, p))
+        })
     }
 
     /// Cancels a queued job. Returns false if it already started or finished.
@@ -474,6 +509,10 @@ impl RenderThread {
             Job::Close { doc } => {
                 self.docs.remove(&doc);
             }
+            Job::Call { doc, call } => match self.docs.get_mut(&doc) {
+                Some(od) => call(Ok(od)),
+                None => call(Err(EngineError::UnknownDoc(doc))),
+            },
             Job::Render { spec, submitted, reply } => {
                 let queued_us = submitted.elapsed().as_micros() as u64;
                 let start = Instant::now();

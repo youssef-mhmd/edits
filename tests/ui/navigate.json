@@ -1,0 +1,92 @@
+[
+  {
+    "key": "F4",
+    "vk": 115,
+    "wait": 1200,
+    "shot": "nav-1-thumbs",
+    "log": "[document.querySelectorAll('.thumb img').length, !!document.querySelector('.sidebar')]"
+  },
+  {
+    "click": ".sidebar .tabs button:nth-child(2)",
+    "wait": 500,
+    "shot": "nav-2-bookmarks",
+    "log": "[...document.querySelectorAll('.bookmarks .title')].map(b => b.textContent)"
+  },
+  {
+    "eval": "[...document.querySelectorAll('.bookmarks .title')].find(b => b.textContent === 'Chapter 3').click()",
+    "wait": 600,
+    "log": "[__viewer.currentPage(), __viewer.canGoBack, document.querySelector('.row.current .title')?.textContent]"
+  },
+  {
+    "eval": "document.querySelectorAll('.bookmarks .twisty')[1].click()",
+    "wait": 300,
+    "log": "[...document.querySelectorAll('.bookmarks .title')].map(b => b.textContent)"
+  },
+  {
+    "eval": "[...document.querySelectorAll('.bookmarks .title')].find(b => b.textContent === 'Section 2.2').click()",
+    "wait": 600,
+    "log": "__viewer.position()"
+  },
+  {
+    "key": "ArrowLeft",
+    "code": "ArrowLeft",
+    "alt": true,
+    "vk": 37,
+    "wait": 600,
+    "log": "[__viewer.currentPage(), __viewer.canGoForward]"
+  },
+  {
+    "key": "Home",
+    "vk": 36,
+    "wait": 800,
+    "log": "[...document.querySelectorAll('.page a.link')].map(a => a.title)"
+  },
+  {
+    "eval": "[...document.querySelectorAll('.page a.link')].find(a => a.title === 'Go to page 31').click()",
+    "wait": 600,
+    "log": "__viewer.position()",
+    "shot": "nav-3-after-toc-link"
+  },
+  {
+    "click": ".sidebar .tabs button:nth-child(1)",
+    "wait": 800,
+    "log": "[...document.querySelectorAll('.thumb.current .label')].map(l => l.textContent)",
+    "shot": "nav-4-thumbs-current"
+  },
+  {
+    "eval": "[...document.querySelectorAll('.thumb')].find(t => t.title === 'Page 33').click()",
+    "wait": 600,
+    "log": "__viewer.currentPage()"
+  },
+  {
+    "eval": "window.__TAURI_INTERNALS__.invoke('plugin:event|emit', { event: 'open-files', payload: ['D:/projects/edits/corpus/files/generated/arabic-mixed.pdf'] })",
+    "wait": 1500,
+    "log": "[...document.querySelectorAll('.tab .tab-name')].map(t => t.textContent + (t.parentElement.classList.contains('active') ? ' *' : ''))",
+    "shot": "nav-5-two-tabs"
+  },
+  {
+    "key": "Tab",
+    "code": "Tab",
+    "ctrl": true,
+    "vk": 9,
+    "wait": 600,
+    "log": "[document.querySelector('.tab.active .tab-name').textContent, __viewer.currentPage()]"
+  },
+  {
+    "key": "w",
+    "code": "KeyW",
+    "ctrl": true,
+    "vk": 87,
+    "wait": 600,
+    "log": "[...document.querySelectorAll('.tab .tab-name')].map(t => t.textContent)"
+  },
+  {
+    "key": "w",
+    "code": "KeyW",
+    "ctrl": true,
+    "vk": 87,
+    "wait": 1200,
+    "log": "[...document.querySelectorAll('.recent-name')].map(t => t.textContent + ' ' + t.nextElementSibling.textContent)",
+    "shot": "nav-6-start-page"
+  }
+]
