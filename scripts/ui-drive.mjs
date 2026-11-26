@@ -4,7 +4,7 @@
 // steps: [{eval: "js"}, {key: "PageDown", ctrl?, shift?, code?}, {click: "css selector"},
 //         {select: ["css", "value"]}, {wait: ms}, {shot: "name"}, {log: "js expr"}]
 import { spawn } from "node:child_process";
-import { writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 
@@ -12,7 +12,8 @@ const [pdf, stepsFile, outDir] = process.argv.slice(2);
 const steps = JSON.parse(readFileSync(stepsFile, "utf8"));
 const port = 9333;
 const exe = fileURLToPath(new URL("../target/release/edits.exe", import.meta.url));
-const stateDir = process.env.EDITS_STATE_DIR ?? `${tmpdir()}/edits-ui-test-state`;
+// A fresh state folder per run (no remembered positions), unless one is given.
+const stateDir = process.env.EDITS_STATE_DIR ?? mkdtempSync(`${tmpdir()}/edits-ui-test-`);
 const app = spawn(exe, pdf ? pdf.split("|") : [], {
   env: {
     ...process.env,
@@ -78,6 +79,32 @@ for (const s of steps) {
       stdio: "ignore",
     });
     await new Promise((r) => second.on("exit", r));
+  }
+  if (s.drag || s.dblclick) {
+    // Expression giving [x1, y1, x2, y2] (drag) or [x, y] (double-click) in window pixels.
+    const pts = await evaluate(s.drag ?? s.dblclick);
+    const mouse = (type, x, y, extra = {}) =>
+      send("Input.dispatchMouseEvent", {
+        type,
+        x,
+        y,
+        button: "left",
+        buttons: type === "mouseReleased" ? 0 : 1,
+        ...extra,
+      });
+    if (s.drag) {
+      const [x1, y1, x2, y2] = pts;
+      await mouse("mousePressed", x1, y1, { clickCount: 1 });
+      for (let k = 1; k <= 8; k++)
+        await mouse("mouseMoved", x1 + ((x2 - x1) * k) / 8, y1 + ((y2 - y1) * k) / 8);
+      await mouse("mouseReleased", x2, y2, { clickCount: 1 });
+    } else {
+      const [x, y] = pts;
+      await mouse("mousePressed", x, y, { clickCount: 1 });
+      await mouse("mouseReleased", x, y, { clickCount: 1 });
+      await mouse("mousePressed", x, y, { clickCount: 2 });
+      await mouse("mouseReleased", x, y, { clickCount: 2 });
+    }
   }
   if (s.wait) await sleep(s.wait);
   if (s.log) console.log(s.log, "=>", JSON.stringify(await evaluate(s.log)));

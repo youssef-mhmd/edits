@@ -53,6 +53,35 @@ body,
   transform-origin: center;
 }
 
+.content {
+  user-select: none;
+}
+
+.page > .marks {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.marks > div {
+  position: absolute;
+  border-radius: 2px;
+}
+
+.marks > .hit {
+  background: rgb(255 200 0 / 0.4);
+}
+
+.marks > .hit.current {
+  background: rgb(255 130 0 / 0.55);
+  outline: 2px solid rgb(230 100 0);
+}
+
+.marks > .sel {
+  background: rgb(60 130 230 / 0.35);
+}
+
 .page > a.link {
   position: absolute;
   z-index: 2;

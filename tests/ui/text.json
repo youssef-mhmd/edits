@@ -1,0 +1,59 @@
+[
+  {
+    "eval": "window.__pt = async (page, i, side) => { const v = __viewer; const t = await v.loadText(page); const b = t.boxes; const box = v.boxes.get(page); const r = v.scroller.getBoundingClientRect(); const w = box.pw / v.dpr, h = box.ph / v.dpr; const x = side === 'l' ? b[4*i] + 0.001 : b[4*i+2] - 0.001; const y = (b[4*i+1] + b[4*i+3]) / 2; return [r.left + box.x + x * w - v.scroller.scrollLeft, r.top + box.y + y * h - v.scroller.scrollTop]; }; window.__line1 = async () => { const t = await __viewer.loadText(0); return t.text.indexOf('\\n'); }",
+    "wait": 300,
+    "log": "__viewer.loadText(0).then(t => t.text.split('\\n')[0])"
+  },
+  {
+    "drag": "(async () => { const end = await __line1(); const a = await __pt(0, 0, 'r'); const b = await __pt(0, end - 1, 'l'); return [...a, ...b]; })()",
+    "wait": 400,
+    "log": "__viewer.selectedText()",
+    "shot": "text-1-selection"
+  },
+  {
+    "dblclick": "__pt(0, 7, 'r')",
+    "wait": 400,
+    "log": "__viewer.selectedText()"
+  },
+  { "key": "Escape", "vk": 27, "wait": 200, "log": "__viewer.hasSelection" },
+  {
+    "key": "f",
+    "code": "KeyF",
+    "ctrl": true,
+    "vk": 70,
+    "wait": 300,
+    "log": "!!document.querySelector('.searchbar input')"
+  },
+  {
+    "eval": "(() => { const i = document.querySelector('.searchbar input'); i.value = 'العربية'; i.dispatchEvent(new Event('input', { bubbles: true })); })()",
+    "wait": 900,
+    "log": "[document.querySelector('.searchbar .status').textContent, document.querySelectorAll('.marks .hit').length]",
+    "shot": "text-2-search"
+  },
+  {
+    "eval": "document.querySelector('.searchbar input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))",
+    "wait": 400,
+    "log": "document.querySelector('.searchbar .status').textContent"
+  },
+  {
+    "eval": "(() => { const i = document.querySelector('.searchbar input'); i.value = 'احمد'; i.dispatchEvent(new Event('input', { bubbles: true })); })()",
+    "wait": 900,
+    "log": "document.querySelector('.searchbar .status').textContent"
+  },
+  {
+    "eval": "document.querySelector('.searchbar button[title^=\"Treat letter\"]').click()",
+    "wait": 900,
+    "log": "document.querySelector('.searchbar .status').textContent"
+  },
+  {
+    "eval": "document.querySelector('.searchbar button[title^=\"Treat letter\"]').click(); (() => { const i = document.querySelector('.searchbar input'); i.value = 'العلم'; i.dispatchEvent(new Event('input', { bubbles: true })); })()",
+    "wait": 900,
+    "log": "document.querySelector('.searchbar .status').textContent"
+  },
+  {
+    "eval": "(() => { const i = document.querySelector('.searchbar input'); i.value = 'pdf'; i.dispatchEvent(new Event('input', { bubbles: true })); })()",
+    "wait": 900,
+    "log": "document.querySelector('.searchbar .status').textContent",
+    "shot": "text-3-search-latin"
+  }
+]

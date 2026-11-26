@@ -332,3 +332,67 @@ fn reads_links_and_drops_unsafe_ones() {
     assert!(links.iter().any(|l| l.target == Target::Uri { uri: "https://example.com/a".into() }));
     assert!(engine.links(doc, 1, 0).unwrap().is_empty());
 }
+
+/// One 300 x 200 pt page with two lines of Helvetica text.
+fn make_text_pdf(name: &str) -> PathBuf {
+    let mut doc = Document::with_version("1.7");
+    let pages_id = doc.new_object_id();
+    let font = doc.add_object(dictionary! { "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica" });
+    let ops = vec![
+        Operation::new("BT", vec![]),
+        Operation::new("Tf", vec!["F1".into(), 12.into()]),
+        Operation::new("Td", vec![20.into(), 150.into()]),
+        Operation::new("Tj", vec![Object::string_literal("Hello world")]),
+        Operation::new("Td", vec![0.into(), (-20).into()]),
+        Operation::new("Tj", vec![Object::string_literal("Second line, hello again")]),
+        Operation::new("ET", vec![]),
+    ];
+    let content = doc.add_object(Stream::new(dictionary! {}, Content { operations: ops }.encode().unwrap()));
+    let page = doc.add_object(dictionary! {
+        "Type" => "Page", "Parent" => pages_id, "Contents" => content,
+        "MediaBox" => vec![0.into(), 0.into(), 300.into(), 200.into()],
+        "Resources" => dictionary! { "Font" => dictionary! { "F1" => font } },
+    });
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! { "Type" => "Pages", "Kids" => vec![page.into()], "Count" => 1 }),
+    );
+    let root = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    doc.trailer.set("Root", root);
+    let dir = std::env::temp_dir().join(format!("edits-core-tests-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(name);
+    doc.save(&path).unwrap();
+    path
+}
+
+#[test]
+fn page_text_has_lines_and_boxes() {
+    let engine = Engine::start().unwrap();
+    let doc = engine.open(make_text_pdf("text.pdf"), None).unwrap().doc;
+    let t = engine.page_text(doc, 0, 0).unwrap();
+    assert_eq!(t.text, "Hello world\nSecond line, hello again");
+    assert_eq!(t.boxes.len(), t.text.encode_utf16().count() * 4);
+    // "H" starts 20 pt from the left of a 300 pt page, in the upper half.
+    let [l, top, r, b] = [t.boxes[0], t.boxes[1], t.boxes[2], t.boxes[3]];
+    assert!((l - 20.0 / 300.0).abs() < 0.01, "{l}");
+    assert!(r > l && b > top && b < 0.5, "{:?}", &t.boxes[..4]);
+    // The inserted line break has no box.
+    let nl = t.text.chars().position(|c| c == '\n').unwrap();
+    assert_eq!(&t.boxes[nl * 4..nl * 4 + 4], &[0.0; 4]);
+}
+
+#[test]
+fn index_and_search() {
+    use edits_core::SearchOptions;
+    let engine = Engine::start().unwrap();
+    let doc = engine.open(make_text_pdf("search.pdf"), None).unwrap().doc;
+    assert_eq!(engine.index_text(doc, 0, 10, 0).unwrap(), 0);
+    let hits = engine.search_pages(doc, vec![0], "hello".into(), SearchOptions::default(), 0).unwrap();
+    assert_eq!(hits, vec![(0, vec![[0, 5], [25, 30]])]);
+    let case = SearchOptions { match_case: true, ..SearchOptions::default() };
+    assert_eq!(engine.search_pages(doc, vec![0], "hello".into(), case, 0).unwrap(), vec![(0, vec![[25, 30]])]);
+    // A line break matches a space.
+    let hits = engine.search_pages(doc, vec![0], "world second".into(), SearchOptions::default(), 0).unwrap();
+    assert_eq!(hits, vec![(0, vec![[6, 18]])]);
+}

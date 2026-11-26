@@ -1,6 +1,6 @@
 // Calls into the Rust side.
 
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 
 export interface PageSize {
   w: number;
@@ -178,3 +178,47 @@ export const transports: Record<Startup["transport"], Transport> = {
   protocol: viaProtocol,
   ipc: viaIpc,
 };
+
+// ------------------------------------------------------------------ text
+
+export interface PageText {
+  /** The page's characters in reading order, one UTF-16 unit each. */
+  text: string;
+  /** Four numbers per character: left, top, right, bottom as page fractions; zeros for inserted spaces and line breaks. */
+  boxes: number[];
+}
+
+export const pageText = (doc: number, page: number) => invoke<PageText>("page_text", { doc, page });
+
+export interface SearchOptions {
+  match_case: boolean;
+  whole_word: boolean;
+  /** Ignore Arabic diacritics and tatweel. */
+  ignore_diacritics: boolean;
+  /** أ إ آ = ا, ى = ي, ة = ه, Persian ی ک, and Arabic-Indic digits = 0-9. */
+  letter_variants: boolean;
+}
+
+export type SearchEvent =
+  | { kind: "batch"; results: [number, [number, number][]][]; searched: number }
+  | { kind: "done"; searched: number }
+  | { kind: "error"; message: string };
+
+/** Starts a search; events arrive on `onEvent`. Returns its id, for `cancelSearch`. */
+export function search(
+  doc: number,
+  query: string,
+  options: SearchOptions,
+  startPage: number,
+  pageCount: number,
+  onEvent: (e: SearchEvent) => void,
+): Promise<number> {
+  const channel = new Channel<SearchEvent>();
+  channel.onmessage = onEvent;
+  return invoke<number>("search", {
+    request: { doc, query, options, start_page: startPage, page_count: pageCount },
+    onEvent: channel,
+  });
+}
+
+export const cancelSearch = (id: number) => invoke<void>("cancel_search", { id });

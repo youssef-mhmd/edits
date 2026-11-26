@@ -15,6 +15,9 @@ use crate::queue::{Priority, Queue};
 
 /// Identifies an open document. Assigned when the open is submitted.
 pub type DocId = u32;
+/// Search matches on one page: its index and character ranges [start, end).
+pub type PageHits = (u32, Vec<[u32; 2]>);
+
 /// Identifies a queued job, for cancelling or re-prioritising it.
 pub type Ticket = u64;
 
@@ -340,6 +343,61 @@ impl Engine {
         })
     }
 
+    /// Page text with character boxes, for selection and highlights.
+    pub fn page_text(&self, doc: DocId, page: u32, priority: Priority) -> Result<crate::text::PageText, EngineError> {
+        self.call(doc, priority, move |od| {
+            let text = crate::text::page_text(od.page(page)?);
+            if od.texts[page as usize].is_none() {
+                od.texts[page as usize] = Some(text.text.as_str().into());
+            }
+            Ok(text)
+        })
+    }
+
+    /// Reads the text of up to `count` pages not yet in the index, starting
+    /// at `from`. Returns how many pages are still missing afterwards.
+    pub fn index_text(&self, doc: DocId, from: u32, count: u32, priority: Priority) -> Result<u32, EngineError> {
+        self.call(doc, priority, move |od| {
+            let n = od.page_count;
+            let mut done = 0;
+            for i in (from..n).chain(0..from.min(n)) {
+                if done >= count {
+                    break;
+                }
+                if od.texts[i as usize].is_none() {
+                    // A page that cannot be read indexes as empty rather than stopping the index.
+                    let _ = od.chars(i).map_err(|_| od.texts[i as usize] = Some("".into()));
+                    done += 1;
+                }
+            }
+            Ok(od.texts.iter().filter(|t| t.is_none()).count() as u32)
+        })
+    }
+
+    /// Searches `pages`, reading text the index does not have yet.
+    /// Returns, for each page with matches, its index and match ranges.
+    pub fn search_pages(
+        &self,
+        doc: DocId,
+        pages: Vec<u32>,
+        query: String,
+        options: crate::text::SearchOptions,
+        priority: Priority,
+    ) -> Result<Vec<PageHits>, EngineError> {
+        self.call(doc, priority, move |od| {
+            let mut out = Vec::new();
+            let n = od.page_count;
+            for p in pages.into_iter().filter(|p| *p < n) {
+                let text = od.chars(p).unwrap_or_else(|_| "".into());
+                let found = crate::text::find(&text, &query, &options, 10_000);
+                if !found.is_empty() {
+                    out.push((p, found));
+                }
+            }
+            Ok(out)
+        })
+    }
+
     /// Cancels a queued job. Returns false if it already started or finished.
     pub fn cancel(&self, ticket: Ticket) -> bool {
         let job = self.shared.lock().queue.remove(ticket);
@@ -433,6 +491,20 @@ struct OpenDoc {
     stamp: Option<(u64, std::time::SystemTime)>,
     /// Pages loaded since the document was (re)opened.
     loads: u32,
+    /// Text of each page once read (the text index). Kept across reopens.
+    texts: Vec<Option<std::sync::Arc<str>>>,
+}
+
+impl OpenDoc {
+    /// The page's characters, from the index or read now and stored.
+    fn chars(&mut self, index: u32) -> Result<std::sync::Arc<str>, EngineError> {
+        if let Some(Some(t)) = self.texts.get(index as usize) {
+            return Ok(t.clone());
+        }
+        let text: std::sync::Arc<str> = crate::text::page_chars(self.page(index)?).into();
+        self.texts[index as usize] = Some(text.clone());
+        Ok(text)
+    }
 }
 
 fn file_stamp(path: &Path) -> Option<(u64, std::time::SystemTime)> {
@@ -606,6 +678,7 @@ impl RenderThread {
                 password: password.map(str::to_string),
                 stamp: file_stamp(path),
                 loads: 0,
+                texts: vec![None; page_count as usize],
             },
         );
         Ok(DocInfo { doc: id, page_count, pages, broken_pages, open_us: start.elapsed().as_micros() as u64 })

@@ -230,3 +230,90 @@ pub fn mem_previews(file: &Path) -> Res<bool> {
     println!("after close: {:.0} MB", private_mb());
     Ok(true)
 }
+
+/// Prints one page's text, to check reading order and character mapping.
+pub fn dump_text(file: &Path, page: u32) -> Res<bool> {
+    let engine = Engine::start()?;
+    let info = engine.open(file, None)?;
+    let t = engine.page_text(info.doc, page, 0)?;
+    println!("{}", t.text);
+    Ok(true)
+}
+
+/// Search timing as the app does it (8-page chunks from page 1), without and
+/// with the text index built. `edits-bench search FILE QUERY`
+pub fn search(file: &Path, query: &str) -> Res<bool> {
+    use edits_core::SearchOptions;
+    let engine = Engine::start()?;
+    let mut all_pass = true;
+    for indexed in [false, true] {
+        let info = engine.open(file, None)?;
+        let pages: Vec<u32> = (0..info.page_count).collect();
+        if indexed {
+            let t = Instant::now();
+            while engine.index_text(info.doc, 0, 64, 0)? > 0 {}
+            println!("index {} pages: {:.0} ms", info.page_count, ms(t));
+        }
+        let t = Instant::now();
+        let mut first = None;
+        let mut matches = 0;
+        for chunk in pages.chunks(8) {
+            let r = engine.search_pages(info.doc, chunk.to_vec(), query.to_string(), SearchOptions::default(), 0)?;
+            if first.is_none() && !r.is_empty() {
+                first = Some(ms(t));
+            }
+            matches += r.iter().map(|(_, m)| m.len()).sum::<usize>();
+        }
+        let total = ms(t);
+        let label = if indexed { "indexed" } else { "cold" };
+        println!("{label}: {matches} matches, first {:.0} ms, all {total:.0} ms", first.unwrap_or(f64::NAN));
+        let mut checks = vec![Check::new(format!("search {label}: all results"), total, targets::SEARCH_ALL_MS, "ms")];
+        if let Some(f) = first {
+            checks.insert(0, Check::new(format!("search {label}: first result"), f, targets::SEARCH_FIRST_MS, "ms"));
+        }
+        targets::print(&checks);
+        all_pass &= checks.iter().all(|c| c.pass);
+        engine.close(info.doc);
+    }
+    Ok(all_pass)
+}
+
+/// Compares page text with the expected files in `tests/text`
+/// (`<pdf stem>.p<page>.txt`), finding each PDF under the corpus folder.
+/// Reading order is fragile; this catches regressions. `edits-bench text-check`
+pub fn text_check(expected_dir: &Path, corpus: &Path) -> Res<bool> {
+    let engine = Engine::start()?;
+    let pdfs = crate::check::pdf_files(corpus)?;
+    let mut ok = true;
+    let mut entries: Vec<_> = std::fs::read_dir(expected_dir)?.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+    entries.sort();
+    for path in entries {
+        let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let Some((stem, page)) = name.strip_suffix(".txt").and_then(|n| n.rsplit_once(".p")) else { continue };
+        let Ok(page) = page.parse::<u32>() else { continue };
+        let Some(pdf) = pdfs.iter().find(|p| p.file_stem().is_some_and(|s| s == stem)) else {
+            println!("SKIP     {name}: {stem}.pdf not in {}", corpus.display());
+            continue;
+        };
+        let info = engine.open(pdf, None)?;
+        let got = engine.page_text(info.doc, page.saturating_sub(1), 0)?.text;
+        engine.close(info.doc);
+        let want = std::fs::read_to_string(&path)?.replace("\r\n", "\n");
+        let want = want.trim_end_matches('\n');
+        if got == want {
+            println!("OK       {name}");
+        } else {
+            ok = false;
+            println!("CHANGED  {name}");
+            for (k, (g, w)) in got.lines().zip(want.lines()).enumerate() {
+                if g != w {
+                    println!("  line {}:\n    expected: {w}\n    got:      {g}", k + 1);
+                }
+            }
+            if got.lines().count() != want.lines().count() {
+                println!("  lines: expected {}, got {}", want.lines().count(), got.lines().count());
+            }
+        }
+    }
+    Ok(ok)
+}

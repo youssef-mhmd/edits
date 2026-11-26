@@ -1,7 +1,7 @@
 // Recent files and where the reader left each one, saved in the app's data
 // folder through the Rust side (state.json).
 
-import { loadState, saveState } from "./api";
+import { loadState, saveState, type SearchOptions } from "./api";
 import type { ViewState } from "./viewer";
 
 export interface RecentEntry extends Partial<ViewState> {
@@ -15,6 +15,7 @@ export interface RecentEntry extends Partial<ViewState> {
 export interface Settings {
   sidebarOpen: boolean;
   sidebarPanel: "pages" | "bookmarks";
+  searchOptions: SearchOptions;
 }
 
 interface Saved {
@@ -26,7 +27,15 @@ interface Saved {
 const MAX_RECENT = 30;
 const SAVE_DELAY = 800;
 
-let saved: Saved = { version: 1, recent: [], settings: { sidebarOpen: false, sidebarPanel: "pages" } };
+let saved: Saved = {
+  version: 1,
+  recent: [],
+  settings: {
+    sidebarOpen: false,
+    sidebarPanel: "pages",
+    searchOptions: { match_case: false, whole_word: false, ignore_diacritics: true, letter_variants: true },
+  },
+};
 let timer = 0;
 
 /** Windows paths compare without case. */

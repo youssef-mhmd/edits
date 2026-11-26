@@ -9,8 +9,11 @@ mod engine;
 mod library;
 mod nav;
 mod queue;
+mod reading;
+mod text;
 
-pub use engine::{DocId, DocInfo, Engine, EngineError, PageSize, RenderSpec, Ticket, Tile};
+pub use engine::{DocId, DocInfo, Engine, EngineError, PageHits, PageSize, RenderSpec, Ticket, Tile};
 pub use library::{PDFIUM_DIR_ENV, find_pdfium_dir};
 pub use nav::{Link, OutlineItem, Target};
 pub use queue::Priority;
+pub use text::{PageText, SearchOptions, find, normalize};

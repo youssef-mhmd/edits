@@ -1010,6 +1010,8 @@ dependencies = [
  "serde",
  "sysinfo",
  "thiserror 2.0.21",
+ "unicode-bidi",
+ "unicode-normalization",
 ]
 
 [[package]]

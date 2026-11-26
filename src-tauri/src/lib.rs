@@ -9,6 +9,7 @@ mod nav;
 #[cfg(windows)]
 mod shm;
 mod state;
+mod text;
 mod tiles;
 
 use std::path::PathBuf;
@@ -93,9 +94,10 @@ async fn open_doc(
     password: Option<String>,
 ) -> Result<DocInfo, EngineError> {
     let engine = state.engine.clone();
+    let indexer = state.engine.clone();
     let initial = state.initial.clone();
     let initial_path = state.args.file.clone();
-    tauri::async_runtime::spawn_blocking(move || match path {
+    let info = tauri::async_runtime::spawn_blocking(move || match path {
         Some(p) => engine.open(p, password),
         // A password for the launch file: open it again with the password.
         None if password.is_some() => {
@@ -107,7 +109,10 @@ async fn open_doc(
         }
     })
     .await
-    .map_err(|_| EngineError::Stopped)?
+    .map_err(|_| EngineError::Stopped)??;
+    // Index the text in the background, so search can start at once.
+    text::start_index(indexer, info.doc);
+    Ok(info)
 }
 
 #[tauri::command]
@@ -185,6 +190,7 @@ pub fn run() {
         .register_asynchronous_uri_scheme_protocol("tile", move |_ctx, request, responder| {
             tiles::handle(&tile_engine, request, responder);
         })
+        .manage(Arc::new(text::Searches::default()))
         .manage(AppState { engine, args, initial, main_unix_ms, setup_unix_ms: setup_ms.clone() })
         .invoke_handler(tauri::generate_handler![
             startup,
@@ -197,6 +203,9 @@ pub fn run() {
             bench::bench_report,
             nav::outline,
             nav::page_links,
+            text::page_text,
+            text::search,
+            text::cancel_search,
             state::load_state,
             state::save_state,
         ])

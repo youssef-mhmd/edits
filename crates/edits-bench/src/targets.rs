@@ -42,3 +42,5 @@ pub const ZOOM_SHARP_MS: f64 = 100.0;
 /// with a small allowance for timer jitter.
 pub const FRAME_P95_MS: f64 = 1000.0 / 60.0 + 2.0;
 pub const MEMORY_100P_MB: f64 = 200.0;
+pub const SEARCH_FIRST_MS: f64 = 200.0;
+pub const SEARCH_ALL_MS: f64 = 2000.0;

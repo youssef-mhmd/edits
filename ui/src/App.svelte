@@ -13,11 +13,13 @@
     startup,
     transports,
     type OutlineItem,
+    type SearchOptions,
     type Transport,
   } from "./api";
   import { Viewer, type FitMode, type ViewMode } from "./viewer";
   import { benchNoFile, benchWithFile } from "./bench";
   import Sidebar from "./Sidebar.svelte";
+  import SearchBar from "./SearchBar.svelte";
   import {
     flushRecent,
     forget,
@@ -61,6 +63,9 @@
   let recent: RecentEntry[] = $state.raw([]);
   let sidebarOpen = $state(false);
   let sidebarPanel: "pages" | "bookmarks" = $state("pages");
+  let findOpen = $state(false);
+  let findBar: SearchBar | null = $state(null);
+  let searchOptions: SearchOptions = $state(settings().searchOptions);
   let bench = false;
   let initialPath: string | null = $state(null);
   // Set while asking for a password; `path` null means the launch file.
@@ -224,10 +229,38 @@
   }
 
   /** The action for a key press, or null to let the browser handle it. */
+  async function openFind() {
+    findOpen = true;
+    await tick();
+    findBar?.focus();
+  }
+
+  async function copySelection(v: Viewer) {
+    const text = await v.selectedText();
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Fallback for when the async clipboard is refused.
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.append(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+      v.scroller.focus();
+    }
+  }
+
   function keyAction(e: KeyboardEvent, v: Viewer): (() => void) | null {
     const pageWise = v.mode !== "continuous";
     const turn = (forward: boolean) => () => (forward ? v.nextPage() : v.prevPage());
     const screen = (dir: number) => () => scrollBy(dir * v.scroller.clientHeight * 0.9);
+    if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "c" && v.hasSelection)
+      return () => void copySelection(v);
+    if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "a")
+      return () => void v.selectPage(v.currentPage());
+    if (e.key === "Escape" && v.hasSelection) return () => v.clearSelection();
     if (e.altKey && e.key === "ArrowLeft") return () => v.goBack();
     if (e.altKey && e.key === "ArrowRight") return () => v.goForward();
     if (e.ctrlKey && e.shiftKey && e.code === "Equal") return () => v.rotate(1);
@@ -284,6 +317,10 @@
     if (e.ctrlKey && e.key === "PageDown") return () => cycleTab(1);
     if (e.ctrlKey && e.key === "PageUp") return () => cycleTab(-1);
     if (e.key === "F4") return () => toggleSidebar();
+    if (viewer && e.ctrlKey && k === "f") return () => void openFind();
+    if (viewer && e.key === "F3") {
+      return () => (findOpen && findBar ? findBar.step(e.shiftKey ? -1 : 1) : void openFind());
+    }
     return null;
   }
 
@@ -323,6 +360,7 @@
         recent = recentFiles();
         sidebarOpen = settings().sidebarOpen;
         sidebarPanel = settings().sidebarPanel;
+        searchOptions = settings().searchOptions;
       }
       const v = s.file ? await open(null) : null;
       if (s.bench) {
@@ -507,6 +545,23 @@
       {#each tabs as t (t.id)}
         <div class="doc" hidden={t.id !== activeId} bind:this={hosts[t.id]}></div>
       {/each}
+      {#if viewer && active && findOpen}
+        {#key active.id}
+          <SearchBar
+            bind:this={findBar}
+            {viewer}
+            options={searchOptions}
+            onoptions={(o) => {
+              searchOptions = o;
+              updateSettings({ searchOptions: o });
+            }}
+            onclose={() => {
+              findOpen = false;
+              viewer?.scroller.focus();
+            }}
+          />
+        {/key}
+      {/if}
       {#if error}
         <div class="toast" role="alert">
           <span>{error}</span>

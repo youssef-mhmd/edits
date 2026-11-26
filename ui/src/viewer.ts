@@ -14,6 +14,7 @@
 import {
   Cancelled,
   pageLinks,
+  pageText,
   setViewport,
   type DocInfo,
   type Link,
@@ -22,6 +23,7 @@ import {
   type TileData,
   type Transport,
 } from "./api";
+import { caretAt, cleanCopy, lineAt, overText, rangeRects, wordAt, type LoadedText } from "./textgeom";
 
 const TILE = 512; // device pixels
 const PREVIEW_W = 300; // device pixels, unrotated page width
@@ -126,7 +128,24 @@ interface PageView {
   tiles: Map<string, HTMLCanvasElement>; // key -> canvas attached to el
   error: HTMLDivElement | null;
   links: HTMLElement[];
+  /** Selection and search highlights, drawn over the tiles. */
+  marks: HTMLDivElement;
 }
+
+/** A caret: page index and position between characters of its text. */
+export interface Caret {
+  page: number;
+  i: number;
+}
+
+/** A search hit: characters [start, end) of a page's text. */
+export interface Hit {
+  page: number;
+  start: number;
+  end: number;
+}
+
+const TEXT_CACHE_PAGES = 60;
 
 /** A reading position: page index and how far down it the view's top edge is (0 to 1). */
 export interface Position {
@@ -206,6 +225,12 @@ export class Viewer {
   private back: Position[] = [];
   private forward: Position[] = [];
   private blobWaiters = new Map<number, ((b: Blob) => void)[]>();
+  private texts = new Map<number, LoadedText>();
+  private textLoads = new Map<number, Promise<LoadedText>>();
+  private sel: { a: Caret; b: Caret } | null = null;
+  private dragging = false;
+  private hits = new Map<number, [number, number][]>();
+  private currentHit: Hit | null = null;
   dpr = window.devicePixelRatio || 1;
   /** Called when the reader clicks a link to a web address. */
   onExternalLink: (uri: string) => void = () => {};
@@ -230,6 +255,10 @@ export class Viewer {
     host.append(this.scroller);
     this.scroller.addEventListener("scroll", () => this.schedule(), { passive: true });
     this.scroller.addEventListener("wheel", (e) => this.onWheel(e), { passive: true });
+    this.scroller.addEventListener("mousedown", (e) => this.onMouseDown(e));
+    this.scroller.addEventListener("mousemove", (e) => this.onHover(e));
+    window.addEventListener("mousemove", this.onDrag);
+    window.addEventListener("mouseup", this.onMouseUp);
     new ResizeObserver(() => this.onResize()).observe(this.scroller);
     this.buildRows();
     this.refit(0, 0);
@@ -238,6 +267,8 @@ export class Viewer {
   destroy() {
     cancelAnimationFrame(this.frame);
     this.active = false;
+    window.removeEventListener("mousemove", this.onDrag);
+    window.removeEventListener("mouseup", this.onMouseUp);
     this.scroller.remove();
   }
 
@@ -562,6 +593,7 @@ export class Viewer {
 
   private place(i: number, v: PageView) {
     this.placeLinks(i, v);
+    this.drawMarks(i);
     const b = this.boxes.get(i)!;
     const st = v.el.style;
     st.left = `${b.x}px`;
@@ -759,13 +791,17 @@ export class Viewer {
       if (!this.views.has(i)) {
         const el = document.createElement("div");
         el.className = "page";
-        const v: PageView = { el, preview: null, tiles: new Map(), error: null, links: [] };
+        const marks = document.createElement("div");
+        marks.className = "marks";
+        el.append(marks);
+        const v: PageView = { el, preview: null, tiles: new Map(), error: null, links: [], marks };
         this.views.set(i, v);
         this.place(i, v);
         this.content.append(el);
         const err = this.errors.get(i);
         if (err) this.showError(v, err);
         this.loadLinks(i);
+        if (this.pageHasMarks(i)) void this.loadText(i).then(() => this.drawMarks(i));
       }
     }
 
@@ -927,6 +963,249 @@ export class Viewer {
     st.left = `${w / 2}px`;
     st.top = `${h / 2}px`;
     st.transform = `translate(-50%, -50%) rotate(${this._rotation * 90}deg)`;
+  }
+
+  // ------------------------------------------------------------------ text
+
+  /** Page `i`'s text with character boxes, cached for the pages near the reader. */
+  loadText(i: number): Promise<LoadedText> {
+    const have = this.texts.get(i);
+    if (have) {
+      this.texts.delete(i);
+      this.texts.set(i, have);
+      return Promise.resolve(have);
+    }
+    let p = this.textLoads.get(i);
+    if (!p) {
+      p = pageText(this.info.doc, i)
+        .then((t) => ({ text: t.text, boxes: Float32Array.from(t.boxes) }))
+        .catch(() => ({ text: "", boxes: new Float32Array() }))
+        .then((t) => {
+          this.texts.set(i, t);
+          this.textLoads.delete(i);
+          for (const k of this.texts.keys()) {
+            if (this.texts.size <= TEXT_CACHE_PAGES) break;
+            if (!this.views.has(k)) this.texts.delete(k);
+          }
+          return t;
+        });
+      this.textLoads.set(i, p);
+    }
+    return p;
+  }
+
+  /** The page under a point in the window, and the point in unrotated page fractions. */
+  private pointToPage(clientX: number, clientY: number): { page: number; fx: number; fy: number } | null {
+    const r = this.scroller.getBoundingClientRect();
+    const x = clientX - r.left + this.scroller.scrollLeft;
+    const y = clientY - r.top + this.scroller.scrollTop;
+    let best: { page: number; d: number } | null = null;
+    for (const i of this.views.keys()) {
+      const b = this.boxes.get(i);
+      if (!b) continue;
+      const w = b.pw / this.dpr;
+      const h = b.ph / this.dpr;
+      const dx = x < b.x ? b.x - x : x > b.x + w ? x - b.x - w : 0;
+      const dy = y < b.y ? b.y - y : y > b.y + h ? y - b.y - h : 0;
+      const d = dx + dy;
+      if (!best || d < best.d) best = { page: i, d };
+    }
+    if (!best) return null;
+    const b = this.boxes.get(best.page)!;
+    // Displayed fractions, clamped to the page.
+    const dxf = Math.min(1, Math.max(0, (x - b.x) / (b.pw / this.dpr)));
+    const dyf = Math.min(1, Math.max(0, (y - b.y) / (b.ph / this.dpr)));
+    // Undo the view rotation.
+    const [fx, fy] =
+      this._rotation === 1
+        ? [dyf, 1 - dxf]
+        : this._rotation === 2
+          ? [1 - dxf, 1 - dyf]
+          : this._rotation === 3
+            ? [1 - dyf, dxf]
+            : [dxf, dyf];
+    return { page: best.page, fx, fy };
+  }
+
+  private caretFor(at: { page: number; fx: number; fy: number }): Caret | null {
+    const t = this.texts.get(at.page);
+    return t ? { page: at.page, i: caretAt(t, at.fx, at.fy) } : null;
+  }
+
+  private onMouseDown(e: MouseEvent) {
+    if (e.button !== 0 || (e.target as HTMLElement).closest("a.link")) return;
+    const at = this.pointToPage(e.clientX, e.clientY);
+    if (!at) return;
+    e.preventDefault();
+    this.scroller.focus();
+    const clicks = e.detail;
+    void this.loadText(at.page).then((t) => {
+      const c = this.caretFor(at);
+      if (!c) return;
+      if (clicks >= 2) {
+        const [a, z] = clicks === 2 ? wordAt(t, c.i) : lineAt(t, c.i);
+        this.setSelection({ page: c.page, i: a }, { page: c.page, i: z });
+        return;
+      }
+      if (e.shiftKey && this.sel) this.setSelection(this.sel.a, c);
+      else this.setSelection(c, c);
+      this.dragging = true;
+    });
+  }
+
+  private onDrag = (e: MouseEvent) => {
+    if (!this.dragging || !this.sel) return;
+    // Scroll while dragging past the edges.
+    const r = this.scroller.getBoundingClientRect();
+    if (e.clientY < r.top + 24) this.scroller.scrollTop -= 24;
+    else if (e.clientY > r.bottom - 24) this.scroller.scrollTop += 24;
+    const at = this.pointToPage(e.clientX, e.clientY);
+    if (!at) return;
+    const c = this.caretFor(at);
+    if (c) this.setSelection(this.sel.a, c);
+    else void this.loadText(at.page);
+  };
+
+  private onMouseUp = () => {
+    this.dragging = false;
+  };
+
+  /** The text cursor over text, so it is clear what can be selected. */
+  private onHover(e: MouseEvent) {
+    if (this.dragging) return;
+    const at = this.pointToPage(e.clientX, e.clientY);
+    const t = at && this.texts.get(at.page);
+    if (at && !t) void this.loadText(at.page);
+    this.scroller.style.cursor = t && overText(t, at!.fx, at!.fy) ? "text" : "";
+  }
+
+  setSelection(a: Caret, b: Caret) {
+    const old = this.sel;
+    this.sel = { a, b };
+    const pages = new Set<number>();
+    for (const s of [old, this.sel]) {
+      if (!s) continue;
+      for (let p = Math.min(s.a.page, s.b.page); p <= Math.max(s.a.page, s.b.page); p++) pages.add(p);
+    }
+    for (const p of pages) if (this.views.has(p)) this.drawMarks(p);
+  }
+
+  clearSelection() {
+    const old = this.sel;
+    this.sel = null;
+    if (old)
+      for (let p = Math.min(old.a.page, old.b.page); p <= Math.max(old.a.page, old.b.page); p++)
+        this.drawMarks(p);
+  }
+
+  /** Selects all text on page `i`. */
+  async selectPage(i: number) {
+    const t = await this.loadText(i);
+    this.setSelection({ page: i, i: 0 }, { page: i, i: t.text.length });
+  }
+
+  get hasSelection(): boolean {
+    const s = this.sel;
+    return !!s && (s.a.page !== s.b.page || s.a.i !== s.b.i);
+  }
+
+  /** The selection's start and end in reading order. */
+  private ordered(): [Caret, Caret] | null {
+    const s = this.sel;
+    if (!s) return null;
+    const before = s.a.page < s.b.page || (s.a.page === s.b.page && s.a.i <= s.b.i);
+    return before ? [s.a, s.b] : [s.b, s.a];
+  }
+
+  /** The selected text, ready for the clipboard. */
+  async selectedText(): Promise<string> {
+    const o = this.ordered();
+    if (!o) return "";
+    const [a, b] = o;
+    const parts: string[] = [];
+    for (let p = a.page; p <= b.page; p++) {
+      const t = await this.loadText(p);
+      parts.push(t.text.slice(p === a.page ? a.i : 0, p === b.page ? b.i : t.text.length));
+    }
+    return cleanCopy(parts.join("\n"));
+  }
+
+  // --------------------------------------------------------------- search
+
+  /** Replaces all search hits (pages to character ranges). */
+  setHits(hits: Map<number, [number, number][]>, current: Hit | null = null) {
+    const pages = new Set([...this.hits.keys(), ...hits.keys()]);
+    this.hits = hits;
+    this.currentHit = current;
+    for (const p of pages) {
+      if (!this.views.has(p)) continue;
+      if (hits.has(p)) void this.loadText(p).then(() => this.drawMarks(p));
+      else this.drawMarks(p);
+    }
+  }
+
+  /** Adds hits for one page as they arrive. */
+  addHits(page: number, ranges: [number, number][]) {
+    this.hits.set(page, ranges);
+    if (this.views.has(page)) void this.loadText(page).then(() => this.drawMarks(page));
+  }
+
+  /** Makes `h` the current hit and scrolls it into view. */
+  async showHit(h: Hit) {
+    const old = this.currentHit;
+    this.currentHit = h;
+    if (old && this.views.has(old.page)) this.drawMarks(old.page);
+    const t = await this.loadText(h.page);
+    const rects = rangeRects(t, h.start, h.end).map((r) => rotateRect(r, this._rotation));
+    if (this._mode === "single" && this.single !== h.page) this.goToPage(h.page);
+    const b = this.boxes.get(h.page);
+    if (!b || !rects.length) return this.goToPage(h.page);
+    const [l, top, r, bot] = rects[0];
+    const w = b.pw / this.dpr;
+    const ht = b.ph / this.dpr;
+    const y0 = b.y + top * ht;
+    const y1 = b.y + bot * ht;
+    const s = this.scroller;
+    if (y0 < s.scrollTop || y1 > s.scrollTop + s.clientHeight) s.scrollTop = y0 - s.clientHeight / 3;
+    const x0 = b.x + l * w;
+    const x1 = b.x + r * w;
+    if (x0 < s.scrollLeft || x1 > s.scrollLeft + s.clientWidth) s.scrollLeft = x0 - s.clientWidth / 3;
+    this.schedule();
+    if (this.views.has(h.page)) this.drawMarks(h.page);
+  }
+
+  private pageHasMarks(i: number): boolean {
+    const o = this.ordered();
+    return this.hits.has(i) || (!!o && i >= o[0].page && i <= o[1].page);
+  }
+
+  /** Redraws page `i`'s selection and search highlights. */
+  private drawMarks(i: number) {
+    const v = this.views.get(i);
+    if (!v) return;
+    v.marks.replaceChildren();
+    const t = this.texts.get(i);
+    if (!t) return;
+    const add = (start: number, end: number, cls: string) => {
+      for (const r of rangeRects(t, start, end)) {
+        const [l, top, rt, bot] = rotateRect(r, this._rotation);
+        const d = document.createElement("div");
+        d.className = cls;
+        d.style.left = `${l * 100}%`;
+        d.style.top = `${top * 100}%`;
+        d.style.width = `${(rt - l) * 100}%`;
+        d.style.height = `${(bot - top) * 100}%`;
+        v.marks.append(d);
+      }
+    };
+    for (const [s, e] of this.hits.get(i) ?? []) {
+      const cur = this.currentHit && this.currentHit.page === i && this.currentHit.start === s;
+      add(s, e, cur ? "hit current" : "hit");
+    }
+    const o = this.ordered();
+    if (o && i >= o[0].page && i <= o[1].page) {
+      add(i === o[0].page ? o[0].i : 0, i === o[1].page ? o[1].i : t.text.length, "sel");
+    }
   }
 
   // ----------------------------------------------------------------- links

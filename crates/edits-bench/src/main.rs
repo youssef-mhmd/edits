@@ -6,6 +6,9 @@
 //! edits-bench core [--json OUT] FILE...            engine benchmarks: open, first page, zoom, scroll
 //! edits-bench app --exe EXE [--json OUT] FILE      app benchmarks: cold start, open, scroll, zoom
 //! edits-bench startup --exe EXE [--runs N]       cold start only
+//! edits-bench text FILE [PAGE]                   print a page's text as PDFium gives it (logical order check)
+//! edits-bench search FILE QUERY                 search timing, cold and indexed (PRD 7)
+//! edits-bench text-check [DIR]                  page text against tests/text (reading order regressions)
 //! edits-bench check [DIR]                          open and render every corpus file, one process each
 //! edits-bench lopdf-check [DIR]                    load, decrypt, clean and re-save every file with lopdf
 //! ```
@@ -17,7 +20,7 @@ mod corpus;
 mod stats;
 mod targets;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const DEFAULT_CORPUS: &str = "corpus/files";
@@ -60,6 +63,18 @@ fn main() -> ExitCode {
             Some(f) => core_bench::mem_previews(&PathBuf::from(f)),
             None => Err("mem-previews needs a FILE".into()),
         },
+        "text" => match args.first() {
+            Some(f) => {
+                let page = args.get(1).and_then(|p| p.parse().ok()).unwrap_or(1u32);
+                core_bench::dump_text(&PathBuf::from(f), page.saturating_sub(1))
+            }
+            None => Err("text needs FILE [PAGE]".into()),
+        },
+        "search" => match (args.first(), args.get(1)) {
+            (Some(f), Some(q)) => core_bench::search(&PathBuf::from(f), q),
+            _ => Err("search needs FILE QUERY".into()),
+        },
+        "text-check" => core_bench::text_check(Path::new("tests/text"), &dir_arg(&args)),
         "check" => check::run_all(&dir_arg(&args)),
         "lopdf-check" => check::lopdf_all(&dir_arg(&args)),
         // Internal: run by `check` in a child process so a crash is contained.
