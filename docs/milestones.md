@@ -12,7 +12,7 @@ Sizes are rough: **S** about 1 week, **M** 2 to 3 weeks, **L** 4 to 6 weeks, **X
 | # | Milestone | Size | Release |
 |---|---|---|---|
 | M0 | Foundation and speed spike | S | none |
-| M1 | Reader | M | 0.1 |
+| M1 | Reader (M1.1 to M1.5) | L | 0.1 |
 | M2 | Annotate and mark up | M | 0.2 |
 | M3 | Organize pages | M | 0.3 |
 | M4 | Forms and signing | M | 0.4 |
@@ -47,23 +47,48 @@ Status 2026-11-26: open, scroll and zoom targets pass. Cold start (470 ms vs 400
 
 ## M1: Reader (release 0.1)
 
-- [ ] Open by dialog, drag and drop, command line, and `.pdf` file association
-- [ ] Continuous, single-page and two-page views; fit width, fit page, custom zoom; rotate view
-- [ ] Two-level cache: low-resolution previews and sharp tiles, bounded by memory
-- [ ] Thumbnails panel, bookmarks panel, go to page
+Split into five parts. Each part ends with an installable build that is better than the last; release 0.1 ships at the end of M1.5.
+
+Done when: it can replace the current default PDF reader for daily use, and all PRD section 7 reader targets pass.
+
+### M1.1: Open and view (S)
+
+- [x] Open by dialog, drag and drop, command line, and `.pdf` file association *(offered in "Open with" and Default apps; never takes over the user's default)*
+- [x] Continuous, single-page and two-page views; fit width, fit page, custom zoom; rotate view *(two-page view has a right-to-left option for Arabic books)*
+- [x] Go to page; keyboard navigation (Page Up/Down, Home/End)
+- [x] Two-level cache: low-resolution previews and sharp tiles, bounded by memory *(previews for the whole document, filled in the background and kept as WebP; PDFium's own caches bounded by reopening the document over a memory limit)*
+- [x] Password-protected files
+- [x] Per-page error display for damaged files; no crash on any corpus file *(synthetic corpus; real-world files come in M1.4)*
+
+Notes: a second double-click opens a second window until tabs arrive in M1.2. Jumping far into a long document before its previews are filled in shows the page blank for about 40 ms; afterwards about one frame.
+
+### M1.2: Navigate (M)
+
+- [ ] Thumbnails panel, bookmarks panel
+- [ ] Links, internal and web
+- [ ] Tabs; a second launch opens its file as a tab in the running window
+- [ ] Recent files, restore last position
+
+### M1.3: Text (M)
+
 - [ ] Text selection and copy, correct for right-to-left text
 - [ ] Search with highlighted matches; Arabic normalization options
 - [ ] Background text index
-- [ ] Links, internal and web
-- [ ] Tabs, recent files, restore last position
-- [ ] Password-protected files
+
+### M1.4: Speed and memory (S)
+
+- [ ] Heavy pages: render worker processes in parallel, progressive rendering that can be cancelled, larger tiles for slow pages
+- [ ] Decide PRD open questions 5 and 6 (cold start and memory targets) and meet the result
+- [ ] Benchmarks on a reference-class machine (4 cores, 8 GB)
+- [ ] Real-world files in the corpus; no crash on any of them
+
+### M1.5: Shell and release 0.1 (M)
+
 - [ ] Print
 - [ ] Light and dark theme; settings
 - [ ] English and Arabic interface with mirrored layout
-- [ ] Per-page error display for damaged files; no crash on any corpus file
 - [ ] Windows installer and auto-update
-
-Done when: it can replace the current default PDF reader for daily use, and all PRD section 7 reader targets pass.
+- [ ] Release 0.1
 
 ## M2: Annotate and mark up (release 0.2)
 

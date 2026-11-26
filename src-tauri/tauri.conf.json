@@ -36,8 +36,17 @@
       "../NOTICE": "NOTICE.txt"
     },
     "licenseFile": "../LICENSE",
+    "fileAssociations": [
+      {
+        "ext": ["pdf"],
+        "name": "edits.pdf",
+        "description": "PDF document",
+        "role": "Viewer",
+        "mimeType": "application/pdf"
+      }
+    ],
     "windows": {
-      "nsis": { "installMode": "currentUser" }
+      "nsis": { "installMode": "currentUser", "installerHooks": "./windows/hooks.nsh" }
     }
   }
 }

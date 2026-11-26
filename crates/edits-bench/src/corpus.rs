@@ -219,6 +219,41 @@ fn mixed_sizes() -> Document {
     b.finish()
 }
 
+/// Five pages where pages 2 to 5 are each broken in a different way. The file
+/// opens; each broken page must show an error or render what it can, and
+/// never crash the app.
+fn damaged_pages() -> Document {
+    let mut b = Builder::new();
+    let mut rng = Rng(5);
+    b.page(A4.0, A4.1, 0, vec![], vec![]);
+    // 2: content stream claims Flate compression but holds garbage.
+    let mut junk = vec![0u8; 4096];
+    rng.fill(&mut junk);
+    let bad_content = b.doc.add_object(Stream::new(dictionary! { "Filter" => "FlateDecode" }, junk.clone()));
+    let p2 = b.page(A4.0, A4.1, 0, vec![], vec![]);
+    if let Ok(Object::Dictionary(d)) = b.doc.get_object_mut(p2) {
+        d.set("Contents", bad_content);
+    }
+    // 3: the page tree points at something that is not a page.
+    let not_a_page = b.doc.add_object(Object::Integer(42));
+    b.kids.push(not_a_page.into());
+    // 4: empty media box.
+    let p4 = b.page(A4.0, A4.1, 0, vec![], vec![]);
+    if let Ok(Object::Dictionary(d)) = b.doc.get_object_mut(p4) {
+        d.set("MediaBox", vec![0.into(), 0.into(), 0.into(), 0.into()]);
+    }
+    // 5: a JPEG image whose data is garbage.
+    let img = b.doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Image", "Width" => 400, "Height" => 300,
+            "ColorSpace" => "DeviceRGB", "BitsPerComponent" => 8, "Filter" => "DCTDecode",
+        },
+        junk,
+    ));
+    b.page(A4.0, A4.1, 0, image_ops("Im1", 50.0, 300.0, 400.0, 300.0), vec![("Im1".into(), img)]);
+    b.finish()
+}
+
 fn acroform() -> Document {
     let mut b = Builder::new();
     let page = b.page(A4.0, A4.1, 0, vec![], vec![]);
@@ -298,6 +333,7 @@ pub fn generate(dir: &Path, large: bool) -> Res<()> {
     save(vector_heavy(5, 20_000), &dir, "vector-heavy-5p.pdf")?;
     save(mixed_sizes(), &dir, "mixed-sizes-rotated.pdf")?;
     save(acroform(), &dir, "form-acroform.pdf")?;
+    save(damaged_pages(), &dir, "damaged-pages-2-to-5.pdf")?;
     save(encrypt(text_doc(3), "edits", "owner")?, &dir, "encrypted-aes256-user-edits.pdf")?;
     save(encrypt(text_doc(3), "", "owner")?, &dir, "encrypted-aes256-owner-only.pdf")?;
 
@@ -340,7 +376,17 @@ pub fn make_scan(input: &Path, output: &Path) -> Res<()> {
     let mut rng = Rng(42);
     for (i, p) in info.pages.iter().enumerate() {
         let (w, h) = ((p.w / 72.0 * 150.0) as u32, (p.h / 72.0 * 150.0) as u32);
-        let spec = edits_core::RenderSpec { doc: info.doc, page: i as u32, page_w: w, page_h: h, x: 0, y: 0, w, h };
+        let spec = edits_core::RenderSpec {
+            doc: info.doc,
+            page: i as u32,
+            page_w: w,
+            page_h: h,
+            x: 0,
+            y: 0,
+            w,
+            h,
+            rotation: 0,
+        };
         let tile = engine.render(spec, 0)?;
         let mut grey = Vec::with_capacity((tile.w * tile.h) as usize);
         for px in tile.rgba.as_chunks::<4>().0 {

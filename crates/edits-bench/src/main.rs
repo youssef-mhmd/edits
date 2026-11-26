@@ -56,6 +56,10 @@ fn main() -> ExitCode {
             let runs = take_opt(&mut args, "--runs").and_then(|r| r.parse().ok()).unwrap_or(10);
             exe.map_err(Into::into).and_then(|exe| app::startup(&PathBuf::from(exe), runs))
         }
+        "mem-previews" => match args.first() {
+            Some(f) => core_bench::mem_previews(&PathBuf::from(f)),
+            None => Err("mem-previews needs a FILE".into()),
+        },
         "check" => check::run_all(&dir_arg(&args)),
         "lopdf-check" => check::lopdf_all(&dir_arg(&args)),
         // Internal: run by `check` in a child process so a crash is contained.

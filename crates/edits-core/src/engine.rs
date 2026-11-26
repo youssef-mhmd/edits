@@ -22,6 +22,15 @@ pub type Ticket = u64;
 /// pages being scrolled through stay loaded while their tiles render.
 const PAGE_CACHE: usize = 12;
 
+/// Default limit on this process's private memory before documents are
+/// reopened to release what PDFium holds (see `RenderThread::trim`).
+pub const DEFAULT_MEMORY_LIMIT_MB: u64 = 128;
+/// How many newly loaded pages between memory checks.
+const PAGES_PER_MEMORY_CHECK: u32 = 16;
+/// Reopen only if memory grew at least this much since the last (re)open, so
+/// a file that is simply large once open is not reopened over and over.
+const MIN_GROWTH_TO_REOPEN: u64 = 32_000_000;
+
 /// Priority used for opening and closing documents: before any rendering.
 const CONTROL_PRIORITY: Priority = Priority::MAX;
 
@@ -39,7 +48,7 @@ pub enum EngineError {
     UnknownDoc(DocId),
     #[error("page {0} is out of range")]
     PageOutOfRange(u32),
-    #[error("render failed: {0}")]
+    #[error("{0}")]
     Render(String),
     #[error("invalid render request: {0}")]
     InvalidSpec(&'static str),
@@ -68,6 +77,8 @@ pub struct DocInfo {
     pub doc: DocId,
     pub page_count: u32,
     pub pages: Vec<PageSize>,
+    /// Pages whose size could not be read; shown at a substitute size.
+    pub broken_pages: Vec<u32>,
     /// Time spent on the render thread opening the file and reading page sizes.
     pub open_us: u64,
 }
@@ -77,6 +88,10 @@ pub struct DocInfo {
 /// The page is rendered as if it were `page_w` × `page_h` device pixels, and
 /// the rectangle `x, y, w, h` (device pixels, from the top-left) is returned.
 /// A whole-page preview is `x = y = 0, w = page_w, h = page_h`.
+///
+/// `rotation` turns the page clockwise in quarter turns (view rotation, on
+/// top of the page's own /Rotate). `page_w` and `page_h` are the size after
+/// rotation, as it appears on screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RenderSpec {
     pub doc: DocId,
@@ -87,6 +102,8 @@ pub struct RenderSpec {
     pub y: u32,
     pub w: u32,
     pub h: u32,
+    #[serde(default)]
+    pub rotation: u8,
 }
 
 /// Largest tile side accepted, to bound memory per job.
@@ -107,6 +124,9 @@ impl RenderSpec {
         }
         if self.x >= self.page_w || self.y >= self.page_h {
             return Err(EngineError::InvalidSpec("tile outside page"));
+        }
+        if self.rotation > 3 {
+            return Err(EngineError::InvalidSpec("rotation must be 0 to 3 quarter turns"));
         }
         Ok(())
     }
@@ -155,6 +175,7 @@ struct State {
 struct Shared {
     state: Mutex<State>,
     wake: Condvar,
+    memory_limit: std::sync::atomic::AtomicU64,
 }
 
 impl Shared {
@@ -178,7 +199,11 @@ impl Engine {
     }
 
     pub fn start_with_library_dir(dir: &Path) -> Result<Self, EngineError> {
-        let shared = Arc::new(Shared { state: Mutex::new(State::default()), wake: Condvar::new() });
+        let shared = Arc::new(Shared {
+            state: Mutex::new(State::default()),
+            wake: Condvar::new(),
+            memory_limit: (DEFAULT_MEMORY_LIMIT_MB * 1_000_000).into(),
+        });
         let (ready_tx, ready_rx) = mpsc::channel();
         let lib_path = Pdfium::pdfium_platform_library_name_at_path(dir);
         let thread_shared = shared.clone();
@@ -198,7 +223,7 @@ impl Engine {
                 // The Pdfium handle must outlive every document opened from it;
                 // it lives as long as this thread, which is the program.
                 let pdfium: &'static Pdfium = Box::leak(Box::new(pdfium));
-                RenderThread { pdfium, docs: HashMap::new() }.run(&thread_shared);
+                RenderThread { pdfium, docs: HashMap::new(), loads_since_check: 0, baseline: 0 }.run(&thread_shared);
             })
             .map_err(|e| EngineError::LibraryLoad(e.to_string()))?;
 
@@ -307,6 +332,13 @@ impl Engine {
         self.shared.lock().queue.set_priority(ticket, priority)
     }
 
+    /// Sets the process memory above which open documents are reopened to
+    /// release PDFium's caches. PDFium keeps every object it has read,
+    /// including image data, until a document is closed.
+    pub fn set_memory_limit_mb(&self, mb: u64) {
+        self.shared.memory_limit.store(mb * 1_000_000, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Number of jobs waiting.
     pub fn queued(&self) -> usize {
         self.shared.lock().queue.len()
@@ -339,11 +371,48 @@ impl Drop for Engine {
 // ---------------------------------------------------------------------------
 // Render thread
 
+/// A short, readable reason for a PDFium failure, for display on the page.
+fn describe(e: &PdfiumError) -> String {
+    match e {
+        PdfiumError::PdfiumLibraryInternalError(i) => match i {
+            PdfiumInternalError::FileError => "the file could not be read",
+            PdfiumInternalError::PasswordError => "a password is needed",
+            PdfiumInternalError::SecurityError => "the file uses an unsupported security handler",
+            _ => "the page is damaged",
+        }
+        .to_string(),
+        PdfiumError::IoError(e) => e.to_string(),
+        other => format!("{other:?}").split_whitespace().collect::<Vec<_>>().join(" "),
+    }
+}
+
 struct OpenDoc {
     // Declared before `doc` so pages drop first.
     pages: Vec<(u32, PdfPage<'static>)>,
     doc: PdfDocument<'static>,
     page_count: u32,
+    path: PathBuf,
+    password: Option<String>,
+    /// File size and modification time at open; a reopen is skipped if the
+    /// file has changed since.
+    stamp: Option<(u64, std::time::SystemTime)>,
+    /// Pages loaded since the document was (re)opened.
+    loads: u32,
+}
+
+fn file_stamp(path: &Path) -> Option<(u64, std::time::SystemTime)> {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.len(), m.modified().ok()?))
+}
+
+/// Private memory of this process, in bytes.
+fn process_memory() -> u64 {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+    let Ok(mut sys) = System::new() else { return 0 };
+    let pid = Pid::from_u32(std::process::id());
+    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), true, ProcessRefreshKind::nothing().with_memory());
+    // Windows: private bytes. Elsewhere sysinfo's virtual size is not useful; use resident.
+    sys.process(pid).map(|p| if cfg!(windows) { p.virtual_memory() } else { p.memory() }).unwrap_or(0)
 }
 
 impl OpenDoc {
@@ -356,11 +425,12 @@ impl OpenDoc {
             let entry = self.pages.remove(pos);
             self.pages.push(entry);
         } else {
-            let page = self.doc.pages().get(index as PdfPageIndex).map_err(|e| EngineError::Render(e.to_string()))?;
+            let page = self.doc.pages().get(index as PdfPageIndex).map_err(|e| EngineError::Render(describe(&e)))?;
             if self.pages.len() >= PAGE_CACHE {
                 self.pages.remove(0);
             }
             self.pages.push((index, page));
+            self.loads += 1;
         }
         Ok(&self.pages.last().expect("just pushed").1)
     }
@@ -369,6 +439,9 @@ impl OpenDoc {
 struct RenderThread {
     pdfium: &'static Pdfium,
     docs: HashMap<DocId, OpenDoc>,
+    loads_since_check: u32,
+    /// Process memory right after the last open or reopen.
+    baseline: u64,
 }
 
 impl RenderThread {
@@ -391,6 +464,7 @@ impl RenderThread {
             if outcome.is_err() {
                 log::error!("render job panicked");
             }
+            self.trim(shared.memory_limit.load(std::sync::atomic::Ordering::Relaxed));
         }
     }
 
@@ -416,6 +490,39 @@ impl RenderThread {
         }
     }
 
+    /// PDFium keeps every object it has parsed, image data included, for the
+    /// life of a document, so reading through a large scanned or image-heavy
+    /// file would hold most of the file in memory. Every few page loads,
+    /// check memory; over the limit, reopen the documents that have loaded
+    /// pages, which frees all of it. Reopening reads only the file's
+    /// cross-reference data (milliseconds), and pages reload on demand.
+    fn trim(&mut self, limit: u64) {
+        let loads: u32 = self.docs.values().map(|d| d.loads).sum();
+        if loads < self.loads_since_check + PAGES_PER_MEMORY_CHECK {
+            return;
+        }
+        self.loads_since_check = loads;
+        let now = process_memory();
+        if now <= limit || now < self.baseline + MIN_GROWTH_TO_REOPEN {
+            return;
+        }
+        for od in self.docs.values_mut().filter(|d| d.loads > 0) {
+            if file_stamp(&od.path) != od.stamp {
+                continue; // changed on disk: keep what we have rather than show a different file
+            }
+            od.pages.clear();
+            match self.pdfium.load_pdf_from_file(&od.path, od.password.as_deref()) {
+                Ok(doc) => {
+                    od.doc = doc;
+                    od.loads = 0;
+                }
+                Err(e) => log::warn!("reopen of {} failed: {}", od.path.display(), describe(&e)),
+            }
+        }
+        self.loads_since_check = self.docs.values().map(|d| d.loads).sum();
+        self.baseline = process_memory();
+    }
+
     fn open(&mut self, id: DocId, path: &Path, password: Option<&str>) -> Result<DocInfo, EngineError> {
         let start = Instant::now();
         let doc = self.pdfium.load_pdf_from_file(path, password).map_err(|e| match e {
@@ -429,13 +536,40 @@ impl RenderThread {
                 EngineError::Open("the file could not be read".into())
             }
             PdfiumError::IoError(e) => EngineError::Open(e.to_string()),
-            other => EngineError::Open(other.to_string()),
+            other => EngineError::Open(describe(&other)),
         })?;
-        let sizes = doc.pages().page_sizes().map_err(|e| EngineError::Open(e.to_string()))?;
-        let pages: Vec<PageSize> = sizes.iter().map(|r| PageSize { w: r.width().value, h: r.height().value }).collect();
-        let page_count = pages.len() as u32;
-        self.docs.insert(id, OpenDoc { pages: Vec::new(), doc, page_count });
-        Ok(DocInfo { doc: id, page_count, pages, open_us: start.elapsed().as_micros() as u64 })
+        // Read sizes one page at a time: a single broken page must not make
+        // the whole document unreadable. It gets the previous page's size
+        // (or A4) and is reported, and rendering it later fails on its own.
+        let page_count = doc.pages().len() as u32;
+        let mut pages = Vec::with_capacity(page_count as usize);
+        let mut broken_pages = Vec::new();
+        for i in 0..page_count {
+            let size = doc
+                .pages()
+                .page_size(i as PdfPageIndex)
+                .ok()
+                .map(|r| PageSize { w: r.width().value, h: r.height().value })
+                .filter(|s| s.w.is_finite() && s.h.is_finite() && s.w >= 1.0 && s.h >= 1.0);
+            pages.push(size.unwrap_or_else(|| {
+                broken_pages.push(i);
+                pages.last().copied().unwrap_or(PageSize { w: 595.0, h: 842.0 })
+            }));
+        }
+        self.baseline = process_memory();
+        self.docs.insert(
+            id,
+            OpenDoc {
+                pages: Vec::new(),
+                doc,
+                page_count,
+                path: path.to_path_buf(),
+                password: password.map(str::to_string),
+                stamp: file_stamp(path),
+                loads: 0,
+            },
+        );
+        Ok(DocInfo { doc: id, page_count, pages, broken_pages, open_us: start.elapsed().as_micros() as u64 })
     }
 
     fn render(&mut self, spec: &RenderSpec) -> Result<(u32, u32, Vec<u8>), EngineError> {
@@ -443,7 +577,7 @@ impl RenderThread {
         let page = doc.page(spec.page)?;
         let w = spec.w.min(spec.page_w - spec.x);
         let h = spec.h.min(spec.page_h - spec.y);
-        let render_err = |e: PdfiumError| EngineError::Render(e.to_string());
+        let render_err = |e: PdfiumError| EngineError::Render(describe(&e));
 
         let mut bitmap = PdfBitmap::empty(w as Pixels, h as Pixels, PdfBitmapFormat::BGRA).map_err(render_err)?;
         let config = PdfRenderConfig::new()
@@ -452,7 +586,20 @@ impl RenderThread {
             .set_format(PdfBitmapFormat::BGRA)
             .set_reverse_byte_order(true)
             .render_annotations(true)
-            .render_form_data(true);
+            .render_form_data(true)
+            // Keeps PDFium from holding every decoded image it has drawn;
+            // without it, background previews of image-heavy files grow the
+            // process by about 100 MB per 1,000 pages.
+            .limit_render_image_cache_size(true)
+            .rotate(
+                match spec.rotation {
+                    1 => PdfPageRenderRotation::Degrees90,
+                    2 => PdfPageRenderRotation::Degrees180,
+                    3 => PdfPageRenderRotation::Degrees270,
+                    _ => PdfPageRenderRotation::None,
+                },
+                false,
+            );
         // The tile is clipped to the page above, so the white clear that
         // pdfium-render applies to the page rectangle covers the whole bitmap.
         page.render_into_bitmap_with_config(&mut bitmap, &config).map_err(render_err)?;

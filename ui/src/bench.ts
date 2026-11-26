@@ -36,7 +36,17 @@ export async function benchNoFile(s: Startup, windowReady: number) {
 }
 
 async function transferBench(v: Viewer, transport: Transport) {
-  const base: RenderSpec = { doc: v.info.doc, page: 0, page_w: 1024, page_h: 1024, x: 0, y: 0, w: 16, h: 16 };
+  const base: RenderSpec = {
+    doc: v.info.doc,
+    page: 0,
+    page_w: 1024,
+    page_h: 1024,
+    x: 0,
+    y: 0,
+    w: 16,
+    h: 16,
+    rotation: 0,
+  };
   const seq = async (spec: RenderSpec, n: number) => {
     const total: number[] = [];
     const render: number[] = [];

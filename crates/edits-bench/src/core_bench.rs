@@ -60,7 +60,8 @@ fn render_view(engine: &Engine, info: &DocInfo, page: u32, page_w: u32, vx: u32,
     while ty < (vy + VIEW_H).min(ph) {
         let mut tx = vx / TILE * TILE;
         while tx < (vx + VIEW_W).min(pw) {
-            let spec = RenderSpec { doc: info.doc, page, page_w: pw, page_h: ph, x: tx, y: ty, w: TILE, h: TILE };
+            let spec =
+                RenderSpec { doc: info.doc, page, page_w: pw, page_h: ph, x: tx, y: ty, w: TILE, h: TILE, rotation: 0 };
             let tile = engine.render(spec, 10)?;
             times.push(tile.render_us as f64 / 1000.0);
             tx += TILE;
@@ -72,8 +73,10 @@ fn render_view(engine: &Engine, info: &DocInfo, page: u32, page_w: u32, vx: u32,
 
 fn preview(engine: &Engine, info: &DocInfo, page: u32) -> Res<()> {
     let (pw, ph) = page_px(info, page, PREVIEW_W);
-    engine
-        .render(RenderSpec { doc: info.doc, page, page_w: pw, page_h: ph, x: 0, y: 0, w: pw, h: ph.min(4096) }, 20)?;
+    engine.render(
+        RenderSpec { doc: info.doc, page, page_w: pw, page_h: ph, x: 0, y: 0, w: pw, h: ph.min(4096), rotation: 0 },
+        20,
+    )?;
     Ok(())
 }
 
@@ -196,4 +199,34 @@ pub fn run(files: &[PathBuf], json: Option<&str>) -> Res<bool> {
         std::fs::write(out, serde_json::to_string_pretty(&report)?)?;
     }
     Ok(all_pass)
+}
+
+/// Private memory of this process in MB.
+fn private_mb() -> f64 {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+    let Ok(mut sys) = System::new() else { return 0.0 };
+    let pid = Pid::from_u32(std::process::id());
+    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), true, ProcessRefreshKind::nothing().with_memory());
+    sys.process(pid).map(|p| p.virtual_memory() as f64 / 1e6).unwrap_or(0.0)
+}
+
+/// Engine memory while rendering a preview of every page, as the viewer's
+/// background fill does. `edits-bench mem-previews FILE`
+pub fn mem_previews(file: &Path) -> Res<bool> {
+    let engine = Engine::start()?;
+    let info = engine.open(file, None)?;
+    println!("after open: {:.0} MB", private_mb());
+    for page in 0..info.page_count {
+        let (pw, ph) = page_px(&info, page, PREVIEW_W);
+        let spec =
+            RenderSpec { doc: info.doc, page, page_w: pw, page_h: ph, x: 0, y: 0, w: pw, h: ph.min(4096), rotation: 0 };
+        drop(engine.render(spec, 0)?);
+        if (page + 1) % 250 == 0 {
+            println!("after {} previews: {:.0} MB", page + 1, private_mb());
+        }
+    }
+    engine.close(info.doc);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    println!("after close: {:.0} MB", private_mb());
+    Ok(true)
 }

@@ -27,6 +27,10 @@ Benchmarks need a release build. `edits.exe --bench-out OUT.json [FILE]` runs th
 - Tiles: 512 device px, raw RGBA. Default transport on Windows is WebView2 shared buffers (`src-tauri/src/shm.rs`); the `tile` URL scheme and binary IPC remain for comparison (`EDITS_TRANSPORT=protocol|ipc`). See docs/m0-results.md.
 - The viewer (`ui/src/viewer.ts`) is plain DOM, not Svelte: per-page preview canvas plus tile canvases placed in percent of page size. Svelte is only the shell.
 - `unsafe` is denied workspace-wide; `shm.rs` (WebView2 COM) is the one allowed exception.
+- PDFium keeps every object it has read (image data included) until a document closes. The render thread reopens documents when process memory passes a limit (`Engine::set_memory_limit_mb`, default 128). `edits-bench mem-previews FILE` shows engine memory while rendering every page.
+- Previews are rendered unrotated at 300 px and kept for the whole document as WebP blobs; the canvas is turned with CSS. Tiles are rendered rotated by PDFium.
+- UI tests: `node scripts/ui-drive.mjs FILE tests/ui/<scenario>.json OUTDIR` drives the release app over the DevTools protocol (WebView2 `--remote-debugging-port`), with the viewer on `window.__viewer`. Steps act first, then wait, then log/screenshot.
+- When editing files from scripts on Windows, write with `newline=''` (Python) or the file gains CRLF line endings.
 
 ## Conventions
 

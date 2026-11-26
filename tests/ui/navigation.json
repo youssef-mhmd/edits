@@ -1,0 +1,36 @@
+[
+  {
+    "select": ["header select", "single"],
+    "wait": 600,
+    "log": "[__viewer.currentPage(), document.querySelector('#page-input').value, document.activeElement.tagName]"
+  },
+  {
+    "key": "PageDown",
+    "vk": 34,
+    "wait": 600,
+    "log": "[__viewer.currentPage(), document.querySelector('#page-input').value, document.activeElement.tagName]"
+  },
+  {
+    "key": "PageDown",
+    "vk": 34,
+    "wait": 600,
+    "log": "[__viewer.currentPage(), document.querySelector('#page-input').value]"
+  },
+  {
+    "select": ["header select", "continuous"],
+    "wait": 600,
+    "log": "[__viewer.currentPage(), __viewer.scroller.scrollTop, document.querySelector('#page-input').value]"
+  },
+  {
+    "key": "End",
+    "vk": 35,
+    "wait": 600,
+    "log": "[__viewer.currentPage(), __viewer.scroller.scrollTop, document.querySelector('#page-input').value]"
+  },
+  {
+    "key": "Home",
+    "vk": 36,
+    "wait": 600,
+    "log": "[__viewer.currentPage(), __viewer.scroller.scrollTop, document.querySelector('#page-input').value, document.activeElement.tagName]"
+  }
+]

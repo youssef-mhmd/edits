@@ -11,6 +11,7 @@ pdfium-render.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 log.workspace = true
+sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 
 [lints]
 workspace = true

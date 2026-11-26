@@ -57,7 +57,8 @@ pub fn render_file(path: &Path) -> Res<bool> {
     for page in (0..info.page_count).step_by(step as usize) {
         let p = info.pages[page as usize];
         let h = ((THUMB_W as f32 * p.h / p.w).round() as u32).clamp(1, 4096);
-        let spec = RenderSpec { doc: info.doc, page, page_w: THUMB_W, page_h: h, x: 0, y: 0, w: THUMB_W, h };
+        let spec =
+            RenderSpec { doc: info.doc, page, page_w: THUMB_W, page_h: h, x: 0, y: 0, w: THUMB_W, h, rotation: 0 };
         match engine.render(spec, 0) {
             Ok(_) => rendered += 1,
             Err(_) => errors += 1,

@@ -11,6 +11,8 @@ export interface DocInfo {
   doc: number;
   page_count: number;
   pages: PageSize[];
+  /** Pages whose size could not be read; they show at a substitute size. */
+  broken_pages: number[];
   open_us: number;
 }
 
@@ -23,6 +25,8 @@ export interface RenderSpec {
   y: number;
   w: number;
   h: number;
+  /** View rotation, clockwise quarter turns (0 to 3). */
+  rotation: number;
 }
 
 export interface Startup {
@@ -46,10 +50,15 @@ export interface TileData {
 }
 
 export const startup = () => invoke<Startup>("startup");
-export const openDoc = (path: string | null) => invoke<DocInfo>("open_doc", { path });
+/** Opens `path`, or the file from the command line when `path` is null. */
+export const openDoc = (path: string | null, password: string | null = null) =>
+  invoke<DocInfo>("open_doc", { path, password });
+
+/** True when an open failed because the file needs a (different) password. */
+export const needsPassword = (e: unknown) => String(e).includes("needs a password");
 export const closeDoc = (doc: number) => invoke<void>("close_doc", { doc });
-export const setViewport = (doc: number, keep: [number, number][]) =>
-  invoke<number>("set_viewport", { doc, keep });
+export const setViewport = (doc: number, keep: [number, number][], keepWidths: number[]) =>
+  invoke<number>("set_viewport", { doc, keep, keepWidths });
 export const benchReport = (report: unknown) => invoke<void>("bench_report", { report });
 
 const tileBase = navigator.userAgent.includes("Windows") ? "http://tile.localhost" : "tile://localhost";
@@ -59,7 +68,7 @@ export class Cancelled extends Error {}
 
 async function viaProtocol(s: RenderSpec, priority: number): Promise<TileData> {
   const t0 = performance.now();
-  const url = `${tileBase}/${s.doc}/${s.page}/${s.page_w}/${s.page_h}/${s.x}/${s.y}/${s.w}/${s.h}?p=${priority}`;
+  const url = `${tileBase}/${s.doc}/${s.page}/${s.page_w}/${s.page_h}/${s.x}/${s.y}/${s.w}/${s.h}/${s.rotation}?p=${priority}`;
   const res = await fetch(url);
   if (res.status === 409) throw new Cancelled();
   if (!res.ok) throw new Error(await res.text());

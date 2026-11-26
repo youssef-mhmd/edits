@@ -82,11 +82,20 @@ fn startup(state: tauri::State<'_, AppState>) -> Startup {
 
 /// Opens `path`, or with no path returns the file given on the command line.
 #[tauri::command]
-async fn open_doc(state: tauri::State<'_, AppState>, path: Option<String>) -> Result<DocInfo, EngineError> {
+async fn open_doc(
+    state: tauri::State<'_, AppState>,
+    path: Option<String>,
+    password: Option<String>,
+) -> Result<DocInfo, EngineError> {
     let engine = state.engine.clone();
     let initial = state.initial.clone();
+    let initial_path = state.args.file.clone();
     tauri::async_runtime::spawn_blocking(move || match path {
-        Some(p) => engine.open(p, None),
+        Some(p) => engine.open(p, password),
+        // A password for the launch file: open it again with the password.
+        None if password.is_some() => {
+            engine.open(initial_path.ok_or(EngineError::Open("no file given".into()))?, password)
+        }
         None => {
             let rx = initial.lock().unwrap_or_else(|e| e.into_inner()).take();
             rx.ok_or(EngineError::Open("no file given".into()))?.recv().map_err(|_| EngineError::Stopped)?
@@ -102,10 +111,13 @@ fn close_doc(state: tauri::State<'_, AppState>, doc: DocId) {
 }
 
 /// Cancels queued renders for `doc` except those for the listed
-/// `[page, page_w]` pairs (the pages in view at their current sizes).
+/// `[page, page_w]` pairs (the pages in view at their current sizes) and
+/// any render whose width is in `keep_widths` (background previews).
 #[tauri::command]
-fn set_viewport(state: tauri::State<'_, AppState>, doc: DocId, keep: Vec<[u32; 2]>) -> usize {
-    state.engine.cancel_where(|s| s.doc == doc && !keep.contains(&[s.page, s.page_w]))
+fn set_viewport(state: tauri::State<'_, AppState>, doc: DocId, keep: Vec<[u32; 2]>, keep_widths: Vec<u32>) -> usize {
+    state
+        .engine
+        .cancel_where(|s| s.doc == doc && !keep.contains(&[s.page, s.page_w]) && !keep_widths.contains(&s.page_w))
 }
 
 pub fn run() {
@@ -130,6 +142,7 @@ pub fn run() {
     let setup_ms = Arc::new(Mutex::new(0.0));
     let setup_ms_hook = setup_ms.clone();
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .register_asynchronous_uri_scheme_protocol("tile", move |_ctx, request, responder| {
             tiles::handle(&tile_engine, request, responder);
         })

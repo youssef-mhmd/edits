@@ -15,7 +15,9 @@ npx tauri dev                  # run in development
 npx tauri build                # installer in target/release/bundle/nsis/
 ```
 
-Open a file with `edits.exe path\to\file.pdf` or by dropping it on the window.
+Open a file with the Open button (Ctrl O), by dropping it on the window, with `edits.exe path\to\file.pdf`, or after installing, from "Open with" in Explorer.
+
+Keys: Ctrl + / Ctrl − / Ctrl + wheel zoom; Ctrl 0 fit width; Ctrl 2 fit page; Ctrl 1 actual size; Ctrl Shift + / Ctrl Shift − rotate; Ctrl G go to page; Page Up/Down, Space, Home, End; ← → turn pages in single and two-page views.
 
 ## Tests and benchmarks
 
@@ -26,6 +28,8 @@ target/release/edits-bench check            # every corpus file opens and render
 target/release/edits-bench core FILE...     # engine timings against PRD section 7
 target/release/edits-bench app --exe target/release/edits.exe FILE   # real app: start, open, scroll, zoom, memory
 target/release/edits-bench lopdf-check      # lopdf load, decrypt, clean and save on every corpus file
+target/release/edits-bench mem-previews FILE # engine memory while rendering every page
+node scripts/ui-drive.mjs FILE tests/ui/navigation.json OUTDIR   # drive the real app, log state, take screenshots
 ```
 
 ## Layout

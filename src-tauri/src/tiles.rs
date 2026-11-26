@@ -1,7 +1,7 @@
 //! Tile transfer to the WebView.
 //!
 //! Two transports, so M0 can measure both:
-//! - `tile` URL scheme: `GET http://tile.localhost/{doc}/{page}/{page_w}/{page_h}/{x}/{y}/{w}/{h}?p={priority}`.
+//! - `tile` URL scheme: `GET http://tile.localhost/{doc}/{page}/{page_w}/{page_h}/{x}/{y}/{w}/{h}[/{rotation}]?p={priority}`.
 //!   Body is raw RGBA; size and timings are in `x-*` headers.
 //! - `render_tile_ipc` command: same render, returned as a binary IPC response
 //!   with a 16-byte header (w, h, render_us, queued_us as little-endian u32).
@@ -13,13 +13,19 @@ use tauri::http::{Request, Response, StatusCode};
 fn parse(request: &Request<Vec<u8>>) -> Option<(RenderSpec, Priority)> {
     let uri = request.uri();
     let nums: Vec<u32> = uri.path().trim_matches('/').split('/').map(|s| s.parse().ok()).collect::<Option<_>>()?;
-    let [doc, page, page_w, page_h, x, y, w, h] = nums[..] else { return None };
+    // An optional ninth segment is the view rotation in quarter turns.
+    let (&[doc, page, page_w, page_h, x, y, w, h], rest) = nums.split_first_chunk::<8>()?;
+    let rotation = match rest {
+        [] => 0,
+        [r] => u8::try_from(*r).ok()?,
+        _ => return None,
+    };
     let priority = uri
         .query()
         .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("p=")))
         .and_then(|p| p.parse().ok())
         .unwrap_or(0);
-    Some((RenderSpec { doc, page, page_w, page_h, x, y, w, h }, priority))
+    Some((RenderSpec { doc, page, page_w, page_h, x, y, w, h, rotation }, priority))
 }
 
 fn response(status: StatusCode, body: Vec<u8>, tile: Option<&Tile>) -> Response<Vec<u8>> {

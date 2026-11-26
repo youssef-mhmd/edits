@@ -12,6 +12,7 @@ edits-core.workspace = true
 lopdf = { workspace = true, default-features = false }
 serde.workspace = true
 serde_json.workspace = true
+sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 
 [lints]
 workspace = true
