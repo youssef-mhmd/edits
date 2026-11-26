@@ -21,7 +21,12 @@ const PRIO_TILE = 1000;
 export const MIN_ZOOM = 0.1;
 export const MAX_ZOOM = 8;
 
-/** Least-recently-used cache of canvases, bounded by pixel bytes. */
+/**
+ * Least-recently-used cache of canvases, bounded by pixel bytes.
+ * The budget is soft: canvases on screen are never evicted, even when they
+ * alone exceed it (large window, high zoom), or the page would fall back to
+ * its blurry preview.
+ */
 class CanvasCache {
   private map = new Map<string, HTMLCanvasElement>();
   private bytes = 0;
@@ -41,7 +46,7 @@ class CanvasCache {
     this.bytes += c.width * c.height * 4;
     for (const [k, old] of this.map) {
       if (this.bytes <= this.budget) break;
-      if (inUse(k)) continue;
+      if (k === key || inUse(k)) continue;
       this.map.delete(k);
       this.bytes -= old.width * old.height * 4;
       old.remove();
@@ -105,9 +110,11 @@ export class Viewer {
   private onResize() {
     // Display scaling changes page pixel sizes; tiles at the old size are
     // replaced as the new ones arrive.
-    this.dpr = window.devicePixelRatio || 1;
+    const dpr = window.devicePixelRatio || 1;
+    const dprChanged = dpr !== this.dpr;
+    this.dpr = dpr;
     const width = this.scroller.clientWidth;
-    if (width !== this.lastWidth) {
+    if (width !== this.lastWidth || dprChanged) {
       this.lastWidth = width;
       if (this.fitting) this.fitWidth();
       else this.layout(); // keep the zoom, re-centre the pages
@@ -129,28 +136,36 @@ export class Viewer {
     return this._zoom;
   }
 
-  /** Layout at the current zoom: page tops in CSS px. */
+  /**
+   * Layout at the current zoom: page tops in CSS px.
+   *
+   * Every page edge is snapped to a whole device pixel, and each page is
+   * exactly as many device pixels as its tiles. Otherwise, at 125% or 150%
+   * display scaling, tiles land between screen pixels and the GPU resamples
+   * them, which blurs text.
+   */
   private layout() {
-    const z = this._zoom;
-    let y = MARGIN;
-    this.tops = this.info.pages.map((p) => {
-      const top = y;
-      y += p.h * z + GAP;
+    const d = this.dpr;
+    let y = Math.round(MARGIN * d);
+    const gap = Math.round(GAP * d);
+    this.tops = this.info.pages.map((_, i) => {
+      const top = y / d;
+      y += this.pagePx(i)[1] + gap;
       return top;
     });
-    this.content.style.height = `${y - GAP + MARGIN}px`;
-    this.content.style.width = `${this.widest * z + 2 * MARGIN}px`;
+    this.content.style.height = `${(y - gap) / d + MARGIN}px`;
+    this.content.style.width = `${this.widest * this._zoom + 2 * MARGIN}px`;
     for (const [i, v] of this.views) this.place(i, v.el);
   }
 
   private place(i: number, el: HTMLDivElement) {
-    const p = this.info.pages[i];
-    const z = this._zoom;
-    const contentW = Math.max(this.widest * z + 2 * MARGIN, this.scroller.clientWidth);
-    el.style.left = `${Math.round((contentW - p.w * z) / 2)}px`;
+    const d = this.dpr;
+    const [pw, ph] = this.pagePx(i);
+    const contentW = Math.max(this.widest * this._zoom + 2 * MARGIN, this.scroller.clientWidth);
+    el.style.left = `${Math.round(((contentW - pw / d) / 2) * d) / d}px`;
     el.style.top = `${this.tops[i]}px`;
-    el.style.width = `${p.w * z}px`;
-    el.style.height = `${p.h * z}px`;
+    el.style.width = `${pw / d}px`;
+    el.style.height = `${ph / d}px`;
   }
 
   /**
@@ -212,7 +227,7 @@ export class Viewer {
     const bottom = this.scroller.scrollTop + this.scroller.clientHeight + extra;
     const out: number[] = [];
     for (let i = this.pageAt(Math.max(0, top)); i < this.tops.length && this.tops[i] < bottom; i++) {
-      if (this.tops[i] + this.info.pages[i].h * this._zoom > top) out.push(i);
+      if (this.tops[i] + this.pagePx(i)[1] / this.dpr > top) out.push(i);
     }
     return out;
   }
@@ -270,7 +285,7 @@ export class Viewer {
   isSharp(i: number): boolean {
     const v = this.views.get(i);
     if (!v) return false;
-    return this.tileSpecs(i, 0).every((s) => v.tiles.has(this.key(s)));
+    return this.tileSpecs(i, 0).every((s) => (v.tiles.get(this.key(s))?.width ?? 0) > 0);
   }
 
   schedule() {
