@@ -41,6 +41,7 @@ jobs:
           cargo build -p edits-bench --release
           ./target/release/edits-bench gen-corpus corpus/files
           ./target/release/edits-bench check corpus/files
+          ./target/release/edits-bench text-check corpus/files
       - name: Engine benchmark (synthetic corpus)
         # CI runners are not the reference machine (PRD 7); this catches large
         # regressions only. App-level numbers are measured locally.

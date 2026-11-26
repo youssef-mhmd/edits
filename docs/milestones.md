@@ -73,9 +73,14 @@ Notes: thumbnails are shown unrotated when the view is rotated.
 
 ### M1.3: Text (M)
 
-- [ ] Text selection and copy, correct for right-to-left text
-- [ ] Search with highlighted matches; Arabic normalization options
-- [ ] Background text index
+- [x] Text selection and copy, correct for right-to-left text *(drag, double-click word, triple-click line, Ctrl A page, Ctrl C; reading order rebuilt from glyph positions because PDFium's order reverses many Arabic words)*
+- [x] Search with highlighted matches; Arabic normalization options *(Ctrl F, F3; diacritics and tatweel, letter variants and Arabic-Indic digits, case, whole words; results stream in from the current page)*
+- [x] Background text index *(starts 1.5 s after opening, two pages per job at the lowest priority)*
+
+Notes:
+- Known limits of the reading-order rebuild, for M8: fully vowelled text from some producers (Chrome) can get spaces inside words; a number written as one left-to-right unit inside Arabic (a phone number with spaces) comes out with its groups reversed, because the PDF does not record the grouping; a lam-alef with tanween from Chrome can split. Regression check: `edits-bench text-check` against `tests/text`.
+- Search: with the index built, 2,000 dense pages search in about 1 s (first result 4 ms). Before the index is built, text extraction costs about 3.6 ms per dense page, mostly in PDFium, so a cold search of 500 dense pages takes about 2 s; render worker processes (M1.4) would let indexing run in parallel.
+- Benchmarks during M1.3 were noisy (the M1.2 build measured slower than before on the same day); rerun on a quiet machine in M1.4.
 
 ### M1.4: Speed and memory (S)
 
