@@ -23,9 +23,14 @@ import {
   type TileData,
   type Transport,
 } from "./api";
+import { t as tr } from "./i18n.svelte";
 import { caretAt, cleanCopy, lineAt, overText, rangeRects, wordAt, type LoadedText } from "./textgeom";
 
 const TILE = 512; // device pixels
+// A page whose 512 px tiles take longer than this to render gets tiles of
+// twice the side: each render of a heavy page repeats work for the whole
+// page, so fewer, larger tiles finish sooner (edits-bench core does the same).
+const SLOW_TILE_US = 40_000;
 const PREVIEW_W = 300; // device pixels, unrotated page width
 const GAP = 12; // CSS pixels between pages
 const MARGIN = 16; // CSS pixels around the document
@@ -69,9 +74,14 @@ class CanvasCache {
   set(key: string, c: HTMLCanvasElement, inUse: (key: string) => boolean) {
     this.map.set(key, c);
     this.bytes += c.width * c.height * 4;
+    this.trim(inUse, key);
+  }
+
+  /** Evicts least recently used canvases not in use until within budget. */
+  trim(inUse: (key: string) => boolean, keep = "") {
     for (const [k, old] of this.map) {
       if (this.bytes <= this.budget) break;
-      if (k === key || inUse(k)) continue;
+      if (k === keep || inUse(k)) continue;
       this.map.delete(k);
       this.bytes -= old.width * old.height * 4;
       old.remove();
@@ -207,6 +217,8 @@ export class Viewer {
   private inflight = new Set<string>();
   private backgroundInflight = 0;
   private errors = new Map<number, string>();
+  /** Pages whose tiles are slow to render; they get larger tiles. */
+  private slowPages = new Set<number>();
   private frame = 0;
   private lastKeep = "";
   private _zoom = 1;
@@ -727,6 +739,11 @@ export class Viewer {
     return x1 > x0 && y1 > y0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null;
   }
 
+  /** Tile side for page `i`, in device pixels. */
+  private tileSide(i: number): number {
+    return this.slowPages.has(i) ? 2 * TILE : TILE;
+  }
+
   private tileSpecs(i: number, margin: number): RenderSpec[] {
     const [pw, ph] = this.pagePx(i);
     if (pw > MAX_PAGE_PX || ph > MAX_PAGE_PX || this.errors.has(i)) return [];
@@ -734,15 +751,16 @@ export class Viewer {
     if (!r) return [];
     const specs: RenderSpec[] = [];
     const rotation = this._rotation;
-    for (let y = Math.floor(r.y / TILE) * TILE; y < r.y + r.h; y += TILE) {
-      for (let x = Math.floor(r.x / TILE) * TILE; x < r.x + r.w; x += TILE) {
-        specs.push({ doc: this.info.doc, page: i, page_w: pw, page_h: ph, x, y, w: TILE, h: TILE, rotation });
+    const side = this.tileSide(i);
+    for (let y = Math.floor(r.y / side) * side; y < r.y + r.h; y += side) {
+      for (let x = Math.floor(r.x / side) * side; x < r.x + r.w; x += side) {
+        specs.push({ doc: this.info.doc, page: i, page_w: pw, page_h: ph, x, y, w: side, h: side, rotation });
       }
     }
     return specs;
   }
 
-  private key = (s: RenderSpec) => `${s.page}/${s.page_w}/${s.rotation}/${s.x}/${s.y}`;
+  private key = (s: RenderSpec) => `${s.page}/${s.page_w}/${s.rotation}/${s.x}/${s.y}/${s.w}`;
 
   /** Previews are rendered unrotated; the canvas is turned to fit the page. */
   private previewSpec(i: number): RenderSpec {
@@ -786,6 +804,13 @@ export class Viewer {
         v.el.remove();
         this.views.delete(i);
       }
+    }
+    // Tiles out of view go back to the cache, where they can be evicted:
+    // canvases cost GPU memory in the WebView, so only what is in view (and
+    // a small margin) stays attached. Previews stay.
+    let detached = false;
+    for (const [i, v] of this.views) {
+      if (!visible.includes(i)) detached = this.detachTiles(v, null) || detached;
     }
     for (const i of near) {
       if (!this.views.has(i)) {
@@ -832,12 +857,17 @@ export class Viewer {
         }
         this.request(key, s, PRIO_TILE - Math.abs(i - center) * 50 - n, (c) => {
           this.tileCache.set(key, c, (k) => this.isAttached(k));
+          // Attach only if still wanted: the view may have moved on.
           const view = this.views.get(i);
-          if (view) this.attachTile(view, key, s, c);
+          if (view && this.tileSpecs(i, TILE_MARGIN).some((t) => this.key(t) === key)) {
+            this.attachTile(view, key, s, c);
+          }
         });
       });
       this.dropStaleTiles(i);
+      detached = this.detachTiles(v, new Set(specs.map(this.key))) || detached;
     }
+    if (detached) this.tileCache.trim((k) => this.isAttached(k));
 
     this.fillPreviewsInBackground(center);
 
@@ -1238,7 +1268,7 @@ export class Viewer {
       a.style.width = `${(r - l) * 100}%`;
       a.style.height = `${(b - t) * 100}%`;
       const target = link.target;
-      a.title = target.kind === "uri" ? target.uri : `Go to page ${target.page + 1}`;
+      a.title = target.kind === "uri" ? target.uri : tr("page.goTo", { n: target.page + 1 });
       a.href = target.kind === "uri" ? target.uri : "#";
       a.addEventListener("click", (e) => {
         e.preventDefault();
@@ -1271,6 +1301,9 @@ export class Viewer {
     this.transport(spec, prio)
       .then((t) => {
         this.onTile(t);
+        if (spec.w === TILE && spec.page_w !== PREVIEW_W && t.renderUs > SLOW_TILE_US) {
+          this.slowPages.add(spec.page);
+        }
         const c = document.createElement("canvas");
         c.width = t.w;
         c.height = t.h;
@@ -1299,7 +1332,7 @@ export class Viewer {
     el.className = "page-error";
     el.setAttribute("role", "alert");
     const title = document.createElement("strong");
-    title.textContent = "This page could not be displayed.";
+    title.textContent = tr("page.error");
     const detail = document.createElement("span");
     detail.textContent = message.charAt(0).toUpperCase() + message.slice(1) + ".";
     el.append(title, detail);
@@ -1316,22 +1349,50 @@ export class Viewer {
     c.className = "tile";
     c.dataset.pw = String(s.page_w);
     c.dataset.rot = String(s.rotation);
+    c.dataset.side = String(s.w);
+    c.dataset.page = String(s.page);
     v.tiles.set(key, c);
     v.el.append(c);
     this.dropStaleTiles(s.page);
+  }
+
+  /**
+   * Detaches current tiles of a page that are not in `wanted` (all of them
+   * when null). They stay in the tile cache. Tiles of other zooms are left
+   * to `dropStaleTiles`, which keeps them until the new ones cover the view.
+   */
+  private detachTiles(v: PageView, wanted: Set<string> | null): boolean {
+    let any = false;
+    for (const [k, c] of v.tiles) {
+      if (wanted?.has(k)) continue;
+      if (wanted && this.isStale(c)) continue;
+      c.remove();
+      v.tiles.delete(k);
+      any = true;
+    }
+    return any;
+  }
+
+  /** True for a tile of another zoom, rotation or tile size than page `i` now uses. */
+  private isStale(c: HTMLCanvasElement): boolean {
+    const page = Number(c.dataset.page);
+    const [pw] = this.pagePx(page);
+    return (
+      Number(c.dataset.pw) !== pw ||
+      c.dataset.rot !== String(this._rotation) ||
+      c.dataset.side !== String(this.tileSide(page))
+    );
   }
 
   /** Once the current zoom's tiles cover the view, removes other zooms' and rotations' tiles. */
   private dropStaleTiles(i: number) {
     const v = this.views.get(i);
     if (!v) return;
-    const [pw] = this.pagePx(i);
     const rot = String(this._rotation);
-    const stale = (c: HTMLCanvasElement) => Number(c.dataset.pw) !== pw || c.dataset.rot !== rot;
     // Tiles of another rotation never line up: drop them at once.
     const sharp = this.isSharp(i);
     for (const [k, c] of v.tiles) {
-      if (c.dataset.rot !== rot || (sharp && stale(c))) {
+      if (c.dataset.rot !== rot || (sharp && this.isStale(c))) {
         c.remove();
         v.tiles.delete(k);
       }

@@ -156,6 +156,15 @@ pub fn run() {
         eprintln!("edits: {e}");
         std::process::exit(1);
     }));
+    // Heavy pages render in worker processes (this executable again).
+    // EDITS_WORKERS=0 keeps everything on the render thread, for comparison.
+    let workers = std::env::var("EDITS_WORKERS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(edits_core::default_worker_count);
+    if let Some(cmd) = edits_core::worker::WorkerCommand::current_exe() {
+        engine.enable_workers(cmd, workers);
+    }
 
     let initial: InitialOpen = Arc::new(Mutex::new(None));
     if let Some(file) = &args.file {
@@ -187,6 +196,8 @@ pub fn run() {
     builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .register_asynchronous_uri_scheme_protocol("tile", move |_ctx, request, responder| {
             tiles::handle(&tile_engine, request, responder);
         })
@@ -208,9 +219,22 @@ pub fn run() {
             text::cancel_search,
             state::load_state,
             state::save_state,
+            state::third_party_licenses,
         ])
-        .setup(move |_app| {
+        .setup(move |app| {
             *setup_ms_hook.lock().unwrap_or_else(|e| e.into_inner()) = unix_ms();
+            // The window starts dark (tauri.conf.json); paint it light at
+            // once if that is the saved theme, so it never flashes dark.
+            if let Some(w) = app.get_webview_window("main") {
+                let light = match state::saved_theme(app.handle()).as_deref() {
+                    Some("light") => true,
+                    Some("dark") => false,
+                    _ => matches!(w.theme(), Ok(tauri::Theme::Light)),
+                };
+                if light {
+                    let _ = w.set_background_color(Some(tauri::window::Color(0xe4, 0xe4, 0xe9, 0xff)));
+                }
+            }
             Ok(())
         })
         .run(tauri::generate_context!())

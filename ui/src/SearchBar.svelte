@@ -2,6 +2,7 @@
   // Find in document (Ctrl F). Results stream in from the engine, starting at
   // the current page; the first one at or after it becomes current.
   import { onDestroy, onMount } from "svelte";
+  import { t } from "./i18n.svelte";
   import { cancelSearch, search, type SearchOptions } from "./api";
   import type { Hit, Viewer } from "./viewer";
 
@@ -119,10 +120,10 @@
       : !query.trim()
         ? ""
         : hits.length
-          ? `${current + 1} of ${hits.length}${searching ? "+" : ""}`
+          ? t("find.of", { n: current + 1, total: `${hits.length}${searching ? "+" : ""}` })
           : searching
-            ? `Searching… ${searched} of ${viewer.pageCount} pages`
-            : "No matches",
+            ? t("find.searching", { done: searched, total: viewer.pageCount })
+            : t("find.none"),
   );
 </script>
 
@@ -131,8 +132,8 @@
     bind:this={input}
     bind:value={query}
     dir="auto"
-    placeholder="Find in document"
-    aria-label="Find in document"
+    placeholder={t("find.placeholder")}
+    aria-label={t("find.placeholder")}
     oninput={schedule}
     onkeydown={(e) => {
       if (e.key === "Enter") {
@@ -149,12 +150,17 @@
   <button
     onclick={() => step(-1)}
     disabled={!hits.length}
-    title="Previous (Shift Enter, Shift F3)"
-    aria-label="Previous match"
+    title={t("find.prevTitle")}
+    aria-label={t("find.prev")}
   >
     ↑
   </button>
-  <button onclick={() => step(1)} disabled={!hits.length} title="Next (Enter, F3)" aria-label="Next match">
+  <button
+    onclick={() => step(1)}
+    disabled={!hits.length}
+    title={t("find.nextTitle")}
+    aria-label={t("find.next")}
+  >
     ↓
   </button>
   <span class="sep"></span>
@@ -162,7 +168,7 @@
     class:on={options.match_case}
     aria-pressed={options.match_case}
     onclick={() => toggle("match_case")}
-    title="Match case"
+    title={t("find.case")}
   >
     Aa
   </button>
@@ -170,15 +176,15 @@
     class:on={options.whole_word}
     aria-pressed={options.whole_word}
     onclick={() => toggle("whole_word")}
-    title="Whole words only"
+    title={t("find.wordTitle")}
   >
-    Word
+    {t("find.word")}
   </button>
   <button
     class:on={options.ignore_diacritics}
     aria-pressed={options.ignore_diacritics}
     onclick={() => toggle("ignore_diacritics")}
-    title="Ignore Arabic diacritics (harakat) and tatweel"
+    title={t("find.diacritics")}
   >
     حَ = ح
   </button>
@@ -186,11 +192,11 @@
     class:on={options.letter_variants}
     aria-pressed={options.letter_variants}
     onclick={() => toggle("letter_variants")}
-    title="Treat letter variants as equal: أ إ آ = ا, ى = ي, ة = ه, ١٢٣ = 123"
+    title={t("find.variants")}
   >
     أ = ا
   </button>
-  <button onclick={onclose} title="Close (Esc)" aria-label="Close find">×</button>
+  <button onclick={onclose} title={t("find.closeTitle")} aria-label={t("find.close")}>×</button>
 </div>
 
 <style>
@@ -204,15 +210,15 @@
     gap: 4px;
     padding: 6px;
     background: var(--bar);
-    border: 1px solid #444;
+    border: 1px solid var(--border);
     border-radius: 8px;
-    box-shadow: 0 4px 16px rgb(0 0 0 / 0.5);
+    box-shadow: 0 4px 16px var(--popup-shadow);
   }
   input {
     width: 220px;
-    background: #333338;
+    background: var(--control);
     color: var(--text);
-    border: 1px solid #444;
+    border: 1px solid var(--border);
     border-radius: 4px;
     padding: 4px 8px;
     font: inherit;
@@ -229,9 +235,9 @@
     white-space: nowrap;
   }
   button {
-    background: #333338;
+    background: var(--control);
     color: var(--text);
-    border: 1px solid #444;
+    border: 1px solid var(--border);
     border-radius: 4px;
     padding: 3px 7px;
     font: inherit;
@@ -244,12 +250,12 @@
   }
   button.on {
     border-color: var(--accent);
-    background: #2d3f55;
+    background: var(--selected);
   }
   .sep {
     width: 1px;
     height: 18px;
-    background: #444;
+    background: var(--border);
     margin: 0 2px;
   }
 </style>

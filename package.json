@@ -1,7 +1,7 @@
 {
   "name": "edits",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.1.0",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
@@ -30,6 +30,8 @@
   "dependencies": {
     "@tauri-apps/api": "~2.11",
     "@tauri-apps/plugin-dialog": "~2.7",
-    "@tauri-apps/plugin-opener": "~2.5"
+    "@tauri-apps/plugin-opener": "~2.5",
+    "@tauri-apps/plugin-process": "~2.3",
+    "@tauri-apps/plugin-updater": "~2.12"
   }
 }

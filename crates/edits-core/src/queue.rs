@@ -40,6 +40,7 @@ impl<T> Queue<T> {
         self.keys.insert(ticket, key);
     }
 
+    #[cfg(test)]
     pub fn pop(&mut self) -> Option<(u64, T)> {
         let (_, (ticket, item)) = self.items.pop_first()?;
         self.keys.remove(&ticket);
@@ -68,6 +69,20 @@ impl<T> Queue<T> {
                 self.keys.remove(ticket);
             })
             .collect()
+    }
+
+    /// Removes and returns the first item, in run order, for which `pred` is
+    /// true, with its ticket and priority.
+    pub fn pop_where(&mut self, mut pred: impl FnMut(&T) -> bool) -> Option<(u64, Priority, T)> {
+        let key = *self.items.iter().find(|(_, (_, item))| pred(item))?.0;
+        let (ticket, item) = self.items.remove(&key)?;
+        self.keys.remove(&ticket);
+        Some((ticket, u32::MAX - key.inv_priority, item))
+    }
+
+    /// How many items `pred` is true for.
+    pub fn count_where(&self, mut pred: impl FnMut(&T) -> bool) -> usize {
+        self.items.values().filter(|(_, item)| pred(item)).count()
     }
 
     pub fn len(&self) -> usize {
@@ -102,6 +117,19 @@ mod tests {
         assert_eq!(q.pop().map(|x| x.1), Some("a"));
         assert_eq!(q.len(), 1);
         assert_eq!(q.remove(42), None);
+    }
+
+    #[test]
+    fn pop_where_skips_non_matching() {
+        let mut q = Queue::default();
+        q.push(1, 9, "skip");
+        q.push(2, 5, "take");
+        q.push(3, 1, "later");
+        assert_eq!(q.count_where(|v| *v != "skip"), 2);
+        assert_eq!(q.pop_where(|v| *v != "skip"), Some((2, 5, "take")));
+        assert_eq!(q.len(), 2);
+        assert_eq!(q.pop().map(|x| x.1), Some("skip"));
+        assert!(q.remove(2).is_none());
     }
 
     #[test]

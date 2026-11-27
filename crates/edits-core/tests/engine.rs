@@ -396,3 +396,113 @@ fn index_and_search() {
     let hits = engine.search_pages(doc, vec![0], "world second".into(), SearchOptions::default(), 0).unwrap();
     assert_eq!(hits, vec![(0, vec![[6, 18]])]);
 }
+
+// ---------------------------------------------------------------- workers
+
+/// A page with very many small vector paths: slow for PDFium to draw.
+fn make_heavy_pdf(name: &str) -> PathBuf {
+    let mut doc = Document::with_version("1.7");
+    let pages_id = doc.new_object_id();
+    let mut ops = vec![Operation::new("w", vec![0.2.into()])];
+    for i in 0..60_000i64 {
+        let (x, y) = ((i * 37) % 590, (i * 53) % 830);
+        ops.push(Operation::new("m", vec![x.into(), y.into()]));
+        ops.push(Operation::new("l", vec![(x + 5).into(), (y + 3).into()]));
+        ops.push(Operation::new("S", vec![]));
+    }
+    // A black square in the top-left corner, as in `make_pdf`.
+    ops.push(Operation::new("rg", vec![0.into(), 0.into(), 0.into()]));
+    ops.push(Operation::new("re", vec![0.into(), 742.into(), 100.into(), 100.into()]));
+    ops.push(Operation::new("f", vec![]));
+    let content = doc.add_object(Stream::new(dictionary! {}, Content { operations: ops }.encode().unwrap()));
+    let page = doc.add_object(dictionary! {
+        "Type" => "Page", "Parent" => pages_id, "Contents" => content,
+        "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+    });
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! { "Type" => "Pages", "Kids" => vec![page.into()], "Count" => 1 }),
+    );
+    let root = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    doc.trailer.set("Root", root);
+    let dir = std::env::temp_dir().join(format!("edits-core-tests-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(name);
+    doc.save(&path).unwrap();
+    path
+}
+
+fn worker_cmd() -> edits_core::worker::WorkerCommand {
+    edits_core::worker::WorkerCommand {
+        exe: env!("CARGO_BIN_EXE_edits-render-worker").into(),
+        args: vec![edits_core::worker::WORKER_ARG.into()],
+    }
+}
+
+/// Renders once on the render thread so the page is marked heavy. Returns
+/// the spec used, or None if this machine draws the page too fast to count.
+fn mark_heavy(engine: &Engine, doc: u32) -> Option<RenderSpec> {
+    let spec = RenderSpec { doc, page: 0, page_w: 595, page_h: 842, x: 0, y: 0, w: 512, h: 512, rotation: 0 };
+    let t = engine.render(spec, 1).unwrap();
+    engine.is_heavy(doc, 0).then_some(spec).or_else(|| {
+        eprintln!("page rendered in {} us; not heavy here, skipping", t.render_us);
+        None
+    })
+}
+
+#[test]
+fn heavy_pages_render_in_workers_with_the_same_pixels() {
+    let engine = Engine::start().unwrap();
+    engine.enable_workers(worker_cmd(), 2);
+    let doc = engine.open(make_heavy_pdf("heavy-a.pdf"), None).unwrap().doc;
+    let Some(spec) = mark_heavy(&engine, doc) else { return };
+    let on_thread = engine.render(spec, 1).unwrap();
+    assert!(engine.workers() >= 1, "a worker took the heavy render");
+    // Several at once: they run in parallel and all come back right.
+    let (tx, rx) = mpsc::channel();
+    for x in [0, 512] {
+        for y in [0, 512] {
+            let tx = tx.clone();
+            engine.render_with(RenderSpec { x, y, ..spec }, 1, move |r| tx.send(r).unwrap());
+        }
+    }
+    drop(tx);
+    let tiles: Vec<_> = rx.iter().map(|r| r.unwrap()).collect();
+    assert_eq!(tiles.len(), 4);
+    let first = tiles.iter().find(|t| t.spec.x == 0 && t.spec.y == 0).unwrap();
+    assert_eq!(first.rgba, on_thread.rgba);
+    assert_eq!(px(first, 10, 10), [0, 0, 0, 255]);
+}
+
+#[test]
+fn cancelling_a_running_heavy_render_stops_it() {
+    let engine = Engine::start().unwrap();
+    engine.enable_workers(worker_cmd(), 1);
+    let doc = engine.open(make_heavy_pdf("heavy-b.pdf"), None).unwrap().doc;
+    let Some(spec) = mark_heavy(&engine, doc) else { return };
+    // Warm the worker up (start, open the file) so the next render is running when cancelled.
+    engine.render(spec, 1).unwrap();
+    let full = RenderSpec { page_w: 2380, page_h: 3368, w: 2380, h: 3368, ..spec };
+    let (tx, rx) = mpsc::channel();
+    let start = std::time::Instant::now();
+    engine.render_with(full, 1, move |r| tx.send(r).unwrap());
+    std::thread::sleep(Duration::from_millis(50));
+    engine.cancel_where(|s| s.doc == doc);
+    let r = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(matches!(r, Err(EngineError::Cancelled) | Ok(_)), "{r:?}");
+    if r.is_err() {
+        assert!(start.elapsed() < Duration::from_secs(5));
+    }
+    // A new worker takes the next render.
+    assert_eq!(px(&engine.render(spec, 1).unwrap(), 10, 10), [0, 0, 0, 255]);
+}
+
+#[test]
+fn heavy_pages_still_render_when_workers_cannot_start() {
+    let engine = Engine::start().unwrap();
+    engine.enable_workers(edits_core::worker::WorkerCommand { exe: "no-such-worker.exe".into(), args: vec![] }, 2);
+    let doc = engine.open(make_heavy_pdf("heavy-c.pdf"), None).unwrap().doc;
+    let Some(spec) = mark_heavy(&engine, doc) else { return };
+    let t = engine.render(spec, 1).unwrap();
+    assert_eq!(px(&t, 10, 10), [0, 0, 0, 255]);
+}

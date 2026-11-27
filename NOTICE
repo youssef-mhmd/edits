@@ -9,8 +9,8 @@ This product includes third-party software:
   Apache-2.0, with the components listed in licenses/pdfium/.
   Binary build by pdfium-binaries (https://github.com/bblanchon/pdfium-binaries),
   MIT, see licenses/pdfium-binaries.txt.
-- Rust crates and npm packages listed in the in-app licenses screen
-  (from M1 on; until then see Cargo.lock and package-lock.json).
+- Rust crates and npm packages listed in licenses/third-party.txt, also shown
+  in Settings > Third-party software (regenerate with scripts/gen-licenses.mjs).
 
 OCR models (from M5) come from the arabic-ocr project under CC BY-SA 4.0;
 its attribution will be reproduced here when they are added.

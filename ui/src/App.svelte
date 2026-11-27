@@ -20,6 +20,11 @@
   import { benchNoFile, benchWithFile } from "./bench";
   import Sidebar from "./Sidebar.svelte";
   import SearchBar from "./SearchBar.svelte";
+  import PrintDialog from "./PrintDialog.svelte";
+  import SettingsDialog from "./SettingsDialog.svelte";
+  import { lang, t, type LangSetting } from "./i18n.svelte";
+  import { applyLook, type Theme } from "./look";
+  import { findUpdate, installUpdate, type Update } from "./update";
   import {
     flushRecent,
     forget,
@@ -72,7 +77,16 @@
   let pwPrompt: { path: string | null; wrong: boolean } | null = $state(null);
   let password = $state("");
   let pwField: HTMLInputElement | null = $state(null);
-  let transport: Transport = transports.protocol;
+  let transport: Transport = $state.raw(transports.protocol);
+  let printOpen = $state(false);
+  let settingsOpen = $state(false);
+  let theme: Theme = $state("system");
+  let language: LangSetting = $state("system");
+  let checkUpdates = $state(true);
+  let update: Update | null = $state.raw(null);
+  let updatePct = $state(-1); // -1 until installing
+  // Back and forward point the other way in a right-to-left interface.
+  const rtlUi = $derived(lang() === "ar");
 
   const nameOf = (path: string) => path.split(/[\\/]/).pop() ?? path;
   const samePath = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
@@ -318,6 +332,8 @@
     if (e.ctrlKey && e.key === "PageUp") return () => cycleTab(-1);
     if (e.key === "F4") return () => toggleSidebar();
     if (viewer && e.ctrlKey && k === "f") return () => void openFind();
+    if (viewer && e.ctrlKey && k === "p") return () => (printOpen = true);
+    if (e.ctrlKey && e.key === ",") return () => (settingsOpen = true);
     if (viewer && e.key === "F3") {
       return () => (findOpen && findBar ? findBar.step(e.shiftKey ? -1 : 1) : void openFind());
     }
@@ -325,6 +341,8 @@
   }
 
   function onKey(e: KeyboardEvent) {
+    // Dialogs handle their own keys.
+    if (printOpen || settingsOpen || pwPrompt) return;
     const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement;
     const action = appKeyAction(e) ?? (viewer && !typing ? keyAction(e, viewer) : null);
     if (action) {
@@ -341,8 +359,36 @@
   }
 
   function describeRecent(r: RecentEntry) {
-    const at = typeof r.page === "number" ? `page ${r.page + 1} of ${r.pages}` : `${r.pages} pages`;
-    return `${at} · ${new Date(r.opened).toLocaleDateString()}`;
+    const at =
+      typeof r.page === "number"
+        ? t("app.recentPage", { page: r.page + 1, pages: r.pages })
+        : t("app.recentPages", { pages: r.pages });
+    return `${at} · ${new Date(r.opened).toLocaleDateString(lang())}`;
+  }
+
+  function changeSettings(s: { theme: Theme; language: LangSetting; checkUpdates: boolean }) {
+    theme = s.theme;
+    language = s.language;
+    checkUpdates = s.checkUpdates;
+    applyLook(theme, language);
+    updateSettings(s);
+  }
+
+  async function checkForUpdate(): Promise<string | null> {
+    const u = await findUpdate();
+    if (u) update = u;
+    return u?.version ?? null;
+  }
+
+  async function install() {
+    if (!update) return;
+    updatePct = 0;
+    try {
+      await installUpdate(update, (pct) => (updatePct = pct));
+    } catch (e) {
+      updatePct = -1;
+      error = t("up.failed", { error: String(e) });
+    }
   }
 
   onMount(() => {
@@ -361,6 +407,12 @@
         sidebarOpen = settings().sidebarOpen;
         sidebarPanel = settings().sidebarPanel;
         searchOptions = settings().searchOptions;
+        theme = settings().theme;
+        language = settings().language;
+        checkUpdates = settings().checkUpdates;
+        applyLook(theme, language);
+        // Look for an update once start-up is well over; never in tests.
+        if (checkUpdates && !navigator.webdriver) setTimeout(() => void checkForUpdate(), 5000);
       }
       const v = s.file ? await open(null) : null;
       if (s.bench) {
@@ -385,7 +437,8 @@
     const unlistenClose = getCurrentWindow().onCloseRequested(async () => {
       if (bench) return;
       try {
-        for (const t of tabs) if (t.viewer) remember(t.path, t.name, t.viewer.pageCount, t.viewer.viewState());
+        for (const t of tabs)
+          if (t.viewer) remember(t.path, t.name, t.viewer.pageCount, t.viewer.viewState());
         await Promise.race([flushRecent(), new Promise((r) => setTimeout(r, 500))]);
       } catch {
         // Closing matters more than the last position.
@@ -403,34 +456,34 @@
 
 <div class="app">
   {#if tabs.length}
-    <div class="tabbar" role="tablist" aria-label="Open documents">
-      {#each tabs as t (t.id)}
+    <div class="tabbar" role="tablist" aria-label={t("app.documents")}>
+      {#each tabs as tab (tab.id)}
         <div
           class="tab"
-          class:active={t.id === activeId}
+          class:active={tab.id === activeId}
           role="tab"
           tabindex="0"
-          aria-selected={t.id === activeId}
-          title={t.path}
-          onclick={() => activate(t.id)}
-          onkeydown={(e) => e.key === "Enter" && activate(t.id)}
-          onauxclick={(e) => e.button === 1 && closeTab(t.id)}
+          aria-selected={tab.id === activeId}
+          title={tab.path}
+          onclick={() => activate(tab.id)}
+          onkeydown={(e) => e.key === "Enter" && activate(tab.id)}
+          onauxclick={(e) => e.button === 1 && closeTab(tab.id)}
         >
-          <span class="tab-name" dir="auto">{t.name}</span>
+          <span class="tab-name" dir="auto">{tab.name}</span>
           <button
             class="tab-close"
-            aria-label="Close {t.name}"
-            title="Close (Ctrl W)"
+            aria-label={t("app.closeTab", { name: tab.name })}
+            title={t("app.closeTabTitle")}
             onclick={(e) => {
               e.stopPropagation();
-              closeTab(t.id);
+              closeTab(tab.id);
             }}
           >
             ×
           </button>
         </div>
       {/each}
-      <button class="tab-new" onclick={openDialog} title="Open a PDF (Ctrl O)" aria-label="Open a PDF">
+      <button class="tab-new" onclick={openDialog} title={t("app.openTitle")} aria-label={t("app.openPdf")}>
         +
       </button>
     </div>
@@ -441,24 +494,29 @@
         class:active={sidebarOpen}
         aria-pressed={sidebarOpen}
         onclick={toggleSidebar}
-        title="Pages and bookmarks (F4)"
+        title={t("bar.panelTitle")}
       >
-        Panel
+        {t("bar.panel")}
       </button>
-      <button disabled={!canBack} onclick={() => viewer?.goBack()} title="Back (Alt ←)" aria-label="Back">
-        ←
+      <button
+        disabled={!canBack}
+        onclick={() => viewer?.goBack()}
+        title={t("bar.backTitle")}
+        aria-label={t("bar.back")}
+      >
+        {rtlUi ? "→" : "←"}
       </button>
       <button
         disabled={!canForward}
         onclick={() => viewer?.goForward()}
-        title="Forward (Alt →)"
-        aria-label="Forward"
+        title={t("bar.forwardTitle")}
+        aria-label={t("bar.forward")}
       >
-        →
+        {rtlUi ? "←" : "→"}
       </button>
       <span class="sep"></span>
       <label class="pageno">
-        <span class="visually-hidden">Page number</span>
+        <span class="visually-hidden">{t("bar.pageNumber")}</span>
         <input
           id="page-input"
           inputmode="numeric"
@@ -475,41 +533,45 @@
             if (e.key === "Enter") goToTyped();
             if (e.key === "Escape") (e.currentTarget as HTMLInputElement).blur();
           }}
-          title="Go to page (Ctrl G)"
+          title={t("bar.goTo")}
         />
-        <span>/ {viewer.pageCount}</span>
+        <span dir="ltr">/ {viewer.pageCount}</span>
       </label>
       <span class="sep"></span>
-      <button onclick={() => zoomBy(0.8)} title="Zoom out (Ctrl -)" aria-label="Zoom out">−</button>
-      <span class="zoom">{zoomPct}%</span>
-      <button onclick={() => zoomBy(1.25)} title="Zoom in (Ctrl +)" aria-label="Zoom in">+</button>
+      <button onclick={() => zoomBy(0.8)} title={t("bar.zoomOutTitle")} aria-label={t("bar.zoomOut")}>
+        −
+      </button>
+      <span class="zoom" dir="ltr">{zoomPct}%</span>
+      <button onclick={() => zoomBy(1.25)} title={t("bar.zoomInTitle")} aria-label={t("bar.zoomIn")}>
+        +
+      </button>
       <button
         class:active={fit === "width"}
         aria-pressed={fit === "width"}
         onclick={() => viewer?.fitWidth()}
-        title="Fit width, follows the window size (Ctrl 0)"
+        title={t("bar.fitWidthTitle")}
       >
-        Fit width
+        {t("bar.fitWidth")}
       </button>
       <button
         class:active={fit === "page"}
         aria-pressed={fit === "page"}
         onclick={() => viewer?.fitPage()}
-        title="Fit page, follows the window size (Ctrl 2)"
+        title={t("bar.fitPageTitle")}
       >
-        Fit page
+        {t("bar.fitPage")}
       </button>
       <span class="sep"></span>
       <label>
-        <span class="visually-hidden">View</span>
+        <span class="visually-hidden">{t("bar.view")}</span>
         <select
           value={mode}
           onchange={(e) => viewer?.setMode(e.currentTarget.value as ViewMode)}
-          title="Page layout"
+          title={t("bar.layout")}
         >
-          <option value="continuous">Continuous</option>
-          <option value="single">Single page</option>
-          <option value="two-page">Two pages</option>
+          <option value="continuous">{t("bar.continuous")}</option>
+          <option value="single">{t("bar.single")}</option>
+          <option value="two-page">{t("bar.twoPage")}</option>
         </select>
       </label>
       {#if mode === "two-page"}
@@ -517,31 +579,52 @@
           class:active={rtl}
           aria-pressed={rtl}
           onclick={() => viewer?.setRtl(!rtl)}
-          title="Right to left: first page of each spread on the right, as in Arabic books"
+          title={t("bar.rtlTitle")}
         >
-          RTL
+          {t("bar.rtl")}
         </button>
       {/if}
       <span class="sep"></span>
       <button
         onclick={() => viewer?.rotate(-1)}
-        title="Rotate view left (Ctrl Shift -)"
-        aria-label="Rotate left"
+        title={t("bar.rotateLeftTitle")}
+        aria-label={t("bar.rotateLeft")}
       >
         ⟲
       </button>
       <button
         onclick={() => viewer?.rotate(1)}
-        title="Rotate view right (Ctrl Shift +)"
-        aria-label="Rotate right"
+        title={t("bar.rotateRightTitle")}
+        aria-label={t("bar.rotateRight")}
       >
         ⟳
       </button>
+      <span class="sep"></span>
+      <button onclick={() => (printOpen = true)} title={t("bar.printTitle")}>{t("bar.print")}</button>
     {:else}
-      <button onclick={openDialog} title="Open a PDF (Ctrl O)">Open</button>
+      <button onclick={openDialog} title={t("app.openTitle")}>{t("app.open")}</button>
       <span class="name">edits</span>
     {/if}
+    <span class="grow"></span>
+    <button
+      onclick={() => (settingsOpen = true)}
+      title={t("bar.settingsTitle")}
+      aria-label={t("bar.settings")}
+    >
+      ⚙
+    </button>
   </header>
+  {#if update}
+    <div class="update" role="status">
+      {#if updatePct >= 0}
+        <span>{t("up.downloading", { pct: updatePct })}</span>
+      {:else}
+        <span>{t("up.available", { version: update.version })}</span>
+        <button class="primary" onclick={install}>{t("up.install")}</button>
+        <button onclick={() => (update = null)}>{t("up.later")}</button>
+      {/if}
+    </div>
+  {/if}
   <div class="body">
     {#if viewer && active && sidebarOpen}
       {#key active.id}
@@ -549,8 +632,8 @@
       {/key}
     {/if}
     <main onwheel={onWheel}>
-      {#each tabs as t (t.id)}
-        <div class="doc" hidden={t.id !== activeId} bind:this={hosts[t.id]}></div>
+      {#each tabs as tab (tab.id)}
+        <div class="doc" hidden={tab.id !== activeId} bind:this={hosts[tab.id]}></div>
       {/each}
       {#if viewer && active && findOpen}
         {#key active.id}
@@ -572,26 +655,29 @@
       {#if error}
         <div class="toast" role="alert">
           <span>{error}</span>
-          <button onclick={() => (error = "")} aria-label="Dismiss">×</button>
+          <button onclick={() => (error = "")} aria-label={t("app.dismiss")}>×</button>
         </div>
       {/if}
       {#if pwPrompt}
         <div class="overlay">
           <form class="password" onsubmit={submitPassword}>
-            <p>
-              <strong>{pwPrompt.path ? nameOf(pwPrompt.path) : nameOf(initialPath ?? "")}</strong> is protected
-              by a password.
+            <p dir="auto">
+              {t("pw.protected", { name: pwPrompt.path ? nameOf(pwPrompt.path) : nameOf(initialPath ?? "") })}
             </p>
             <label>
-              Password
-              <input type="password" bind:this={pwField} bind:value={password} autocomplete="off" />
+              {t("pw.password")}
+              <input
+                type="password"
+                bind:this={pwField}
+                bind:value={password}
+                autocomplete="off"
+                onkeydown={(e) => e.key === "Escape" && (pwPrompt = null)}
+              />
             </label>
-            {#if pwPrompt.wrong}<p class="error" role="alert">
-                That password is not correct. Try again.
-              </p>{/if}
+            {#if pwPrompt.wrong}<p class="error" role="alert">{t("pw.wrong")}</p>{/if}
             <div class="actions">
-              <button type="submit">Open</button>
-              <button type="button" onclick={() => (pwPrompt = null)}>Cancel</button>
+              <button type="submit">{t("pw.open")}</button>
+              <button type="button" onclick={() => (pwPrompt = null)}>{t("common.cancel")}</button>
             </div>
           </form>
         </div>
@@ -599,11 +685,11 @@
         <div class="start">
           <div class="start-inner">
             <p>
-              <button class="primary" onclick={openDialog}>Open a PDF</button>
-              <span class="hint">or press Ctrl O, or drop files here</span>
+              <button class="primary" onclick={openDialog}>{t("app.openPdf")}</button>
+              <span class="hint">{t("app.openHint")}</span>
             </p>
             {#if recent.length}
-              <h2>Recent</h2>
+              <h2>{t("app.recent")}</h2>
               <ul class="recent">
                 {#each recent.slice(0, 12) as r (r.path)}
                   <li>
@@ -614,8 +700,8 @@
                     </button>
                     <button
                       class="recent-forget"
-                      aria-label="Remove {r.name} from recent files"
-                      title="Remove from this list"
+                      aria-label={t("app.forget", { name: r.name })}
+                      title={t("app.forgetTitle")}
                       onclick={() => {
                         forget(r.path);
                         recent = recentFiles();
@@ -629,6 +715,31 @@
             {/if}
           </div>
         </div>
+      {/if}
+      {#if printOpen && viewer}
+        <PrintDialog
+          {viewer}
+          {transport}
+          dpi={settings().printDpi}
+          ondpi={(dpi) => updateSettings({ printDpi: dpi })}
+          onclose={() => {
+            printOpen = false;
+            viewer?.scroller.focus();
+          }}
+        />
+      {/if}
+      {#if settingsOpen}
+        <SettingsDialog
+          {theme}
+          {language}
+          {checkUpdates}
+          onchange={changeSettings}
+          oncheck={checkForUpdate}
+          onclose={() => {
+            settingsOpen = false;
+            viewer?.scroller.focus();
+          }}
+        />
       {/if}
     </main>
   </div>
@@ -646,7 +757,7 @@
     gap: 1px;
     height: 32px;
     padding: 0 6px;
-    background: #151517;
+    background: var(--tabbar);
     overflow-x: auto;
     flex: none;
   }
@@ -664,7 +775,7 @@
     user-select: none;
   }
   .tab:hover {
-    background: #222226;
+    background: var(--tab-hover);
   }
   .tab.active {
     background: var(--bar);
@@ -690,7 +801,7 @@
   }
   .tab-close:hover,
   .tab-new:hover {
-    background: #3d3d44;
+    background: var(--control-hover);
   }
   .tab-new {
     margin-top: 4px;
@@ -704,7 +815,7 @@
     height: 40px;
     padding: 0 12px;
     background: var(--bar);
-    border-bottom: 1px solid #000;
+    border-bottom: 1px solid var(--edge);
     user-select: none;
     white-space: nowrap;
     overflow-x: auto;
@@ -713,11 +824,23 @@
   .name {
     font-weight: 600;
   }
+  .grow {
+    flex: 1;
+  }
+  .update {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 12px;
+    background: var(--note-bg);
+    border-bottom: 1px solid var(--note-border);
+    flex: none;
+  }
   .sep {
     flex: none;
     width: 1px;
     height: 18px;
-    background: #444;
+    background: var(--border);
   }
   .pageno {
     display: flex;
@@ -737,9 +860,9 @@
   button,
   select,
   input {
-    background: #333338;
+    background: var(--control);
     color: var(--text);
-    border: 1px solid #444;
+    border: 1px solid var(--border);
     border-radius: 4px;
     padding: 3px 8px;
     font: inherit;
@@ -753,11 +876,11 @@
   }
   button:hover:not(:disabled),
   select:hover {
-    background: #3d3d44;
+    background: var(--control-hover);
   }
   button.active {
     border-color: var(--accent);
-    background: #2d3f55;
+    background: var(--selected);
   }
   button:focus-visible,
   select:focus-visible,
@@ -790,7 +913,7 @@
     inset: 0;
     display: grid;
     place-content: center;
-    background: rgb(0 0 0 / 0.4);
+    background: var(--overlay);
     z-index: 10;
   }
   .password {
@@ -799,7 +922,7 @@
     min-width: 320px;
     padding: 20px 24px;
     background: var(--bar);
-    border: 1px solid #444;
+    border: 1px solid var(--border);
     border-radius: 8px;
     color: var(--text);
   }
@@ -816,7 +939,7 @@
     justify-content: flex-end;
   }
   .error {
-    color: #ff8a80;
+    color: var(--error);
   }
   .toast {
     position: absolute;
@@ -828,10 +951,10 @@
     align-items: center;
     max-width: min(640px, 90%);
     padding: 8px 8px 8px 14px;
-    background: #3a1f1d;
-    border: 1px solid #7a2e27;
+    background: var(--toast-bg);
+    border: 1px solid var(--toast-border);
     border-radius: 6px;
-    color: #ffd2cc;
+    color: var(--toast-text);
     z-index: 11;
   }
   .start {
@@ -851,7 +974,7 @@
     padding: 6px 14px;
   }
   .primary:hover {
-    background: #5b9de0 !important;
+    background: var(--primary-hover) !important;
   }
   .hint {
     margin-inline-start: 10px;
@@ -876,7 +999,7 @@
     border-radius: 6px;
   }
   .recent li:hover {
-    background: #333338;
+    background: var(--control);
   }
   .recent-open {
     flex: 1;

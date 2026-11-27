@@ -18,6 +18,27 @@ fn state_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("state.json"))
 }
 
+/// The theme saved in the settings ("system", "light" or "dark"), read at
+/// start-up so the window opens in the right colour before the front end runs.
+pub fn saved_theme(app: &tauri::AppHandle) -> Option<String> {
+    let text = std::fs::read(state_path(app).ok()?).ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&text).ok()?;
+    v.get("settings")?.get("theme")?.as_str().map(str::to_string)
+}
+
+/// The list of third-party software bundled with the app (PRD 10.1).
+#[tauri::command]
+pub fn third_party_licenses(app: tauri::AppHandle) -> String {
+    let bundled = app.path().resource_dir().ok().map(|d| d.join("licenses").join("third-party.txt"));
+    // Development builds read it from the source tree.
+    let dev = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../licenses/third-party.txt");
+    bundled
+        .into_iter()
+        .chain([dev])
+        .find_map(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_else(|| "The licence list is missing from this installation.".into())
+}
+
 /// The saved state, or `null` if there is none or it cannot be read.
 #[tauri::command]
 pub fn load_state(app: tauri::AppHandle) -> serde_json::Value {

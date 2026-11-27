@@ -33,7 +33,8 @@ pub fn print(checks: &[Check]) {
 }
 
 // Section 7 values.
-pub const COLD_START_MS: f64 = 400.0;
+/// Relaxed from 400 ms (PRD open question 5): WebView2 start-up alone is about 400 ms.
+pub const COLD_START_MS: f64 = 500.0;
 pub const OPEN_10MB_FIRST_PAGE_MS: f64 = 600.0;
 pub const OPEN_LARGE_FIRST_PAGE_MS: f64 = 1000.0;
 pub const SHARP_AFTER_SCROLL_MS: f64 = 100.0;
@@ -41,6 +42,8 @@ pub const ZOOM_SHARP_MS: f64 = 100.0;
 /// 60 fps: a frame every 16.7 ms. The p95 frame interval is held to this,
 /// with a small allowance for timer jitter.
 pub const FRAME_P95_MS: f64 = 1000.0 / 60.0 + 2.0;
-pub const MEMORY_100P_MB: f64 = 200.0;
+/// Growth of all processes (WebView2 included) over the app with no document
+/// open (PRD open question 6).
+pub const MEMORY_ABOVE_IDLE_MB: f64 = 200.0;
 pub const SEARCH_FIRST_MS: f64 = 200.0;
 pub const SEARCH_ALL_MS: f64 = 2000.0;

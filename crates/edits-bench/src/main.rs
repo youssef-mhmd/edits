@@ -3,7 +3,8 @@
 //! ```text
 //! edits-bench gen-corpus [--large] [DIR]          write synthetic corpus files
 //! edits-bench make-scan IN.pdf OUT.pdf          image-only noisy "scan" of IN
-//! edits-bench core [--json OUT] FILE...            engine benchmarks: open, first page, zoom, scroll
+//! edits-bench fuzz-corpus SRC OUT [--per-file N] damaged copies of real files, for `check`
+//! edits-bench core [--workers N] [--json OUT] FILE...  engine benchmarks: open, first page, zoom, scroll
 //! edits-bench app --exe EXE [--json OUT] FILE      app benchmarks: cold start, open, scroll, zoom
 //! edits-bench startup --exe EXE [--runs N]       cold start only
 //! edits-bench text FILE [PAGE]                   print a page's text as PDFium gives it (logical order check)
@@ -26,6 +27,10 @@ use std::process::ExitCode;
 const DEFAULT_CORPUS: &str = "corpus/files";
 
 fn main() -> ExitCode {
+    // `core` starts this executable again as a render worker.
+    if edits_core::worker::serve_if_requested() {
+        return ExitCode::SUCCESS;
+    }
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
         eprintln!("{}", USAGE);
@@ -37,13 +42,21 @@ fn main() -> ExitCode {
             let large = take_flag(&mut args, "--large");
             corpus::generate(&dir_arg(&args), large).map(|()| true)
         }
+        "fuzz-corpus" => {
+            let per = take_opt(&mut args, "--per-file").and_then(|n| n.parse().ok()).unwrap_or(4);
+            match (args.first(), args.get(1)) {
+                (Some(i), Some(o)) => corpus::fuzz(Path::new(i), Path::new(o), per).map(|()| true),
+                _ => Err("fuzz-corpus needs SRC_DIR OUT_DIR".into()),
+            }
+        }
         "make-scan" => match (args.first(), args.get(1)) {
             (Some(i), Some(o)) => corpus::make_scan(&PathBuf::from(i), &PathBuf::from(o)).map(|()| true),
             _ => Err("make-scan needs INPUT.pdf OUTPUT.pdf".into()),
         },
         "core" => {
             let json = take_opt(&mut args, "--json");
-            core_bench::run(&args.iter().map(PathBuf::from).collect::<Vec<_>>(), json.as_deref())
+            let workers = take_opt(&mut args, "--workers").and_then(|w| w.parse().ok());
+            core_bench::run(&args.iter().map(PathBuf::from).collect::<Vec<_>>(), json.as_deref(), workers)
         }
         "app" => {
             let exe = take_opt(&mut args, "--exe");

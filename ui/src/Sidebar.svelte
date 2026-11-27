@@ -3,6 +3,7 @@
   import { onDestroy, tick } from "svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import type { OutlineItem } from "./api";
+  import { t } from "./i18n.svelte";
   import type { Viewer } from "./viewer";
 
   interface Props {
@@ -150,7 +151,11 @@
           style:padding-inline-start="{depth * 14 + 4}px"
         >
           {#if item.children.length}
-            <button class="twisty" aria-label={open ? "Collapse" : "Expand"} onclick={() => toggle(id)}>
+            <button
+              class="twisty"
+              aria-label={open ? t("side.collapse") : t("side.expand")}
+              onclick={() => toggle(id)}
+            >
               {open ? "▾" : "▸"}
             </button>
           {:else}
@@ -174,11 +179,13 @@
   </ul>
 {/snippet}
 
-<aside class="sidebar" aria-label="Side panel">
+<aside class="sidebar" aria-label={t("side.label")}>
   <div class="tabs" role="tablist">
-    <button role="tab" aria-selected={panel === "pages"} onclick={() => showPanel("pages")}>Pages</button>
+    <button role="tab" aria-selected={panel === "pages"} onclick={() => showPanel("pages")}>
+      {t("side.pages")}
+    </button>
     <button role="tab" aria-selected={panel === "bookmarks"} onclick={() => showPanel("bookmarks")}>
-      Bookmarks
+      {t("side.bookmarks")}
     </button>
   </div>
 
@@ -190,7 +197,7 @@
       onscroll={(e) => (scrollTop = e.currentTarget.scrollTop)}
       onwheel={() => (userScrolledAt = performance.now())}
       role="listbox"
-      aria-label="Pages"
+      aria-label={t("side.pages")}
     >
       <div style:height="{total}px" style:position="relative">
         {#each visible as i (i)}
@@ -201,7 +208,7 @@
             aria-selected={i === page}
             style:top="{offsets[i]}px"
             onclick={() => viewer.navigate(i)}
-            title="Page {i + 1}"
+            title={t("side.page", { n: i + 1 })}
           >
             <span class="img" style:width="{THUMB_W}px" style:height="{heights[i] - LABEL_H - PAD}px">
               {#if urls.get(i)}<img src={urls.get(i)} alt="" draggable="false" />{/if}
@@ -214,9 +221,9 @@
   {:else}
     <div class="bookmarks">
       {#if outline === null}
-        <p class="note">Loading…</p>
+        <p class="note">{t("side.loading")}</p>
       {:else if outline.length === 0}
-        <p class="note">This document has no bookmarks.</p>
+        <p class="note">{t("side.noBookmarks")}</p>
       {:else}
         {@render tree(outline, "", 0)}
       {/if}
@@ -231,14 +238,14 @@
     width: 200px;
     min-width: 200px;
     background: var(--bar);
-    border-inline-end: 1px solid #000;
+    border-inline-end: 1px solid var(--edge);
     min-height: 0;
   }
   .tabs {
     display: flex;
     gap: 2px;
     padding: 6px 6px 0;
-    border-bottom: 1px solid #000;
+    border-bottom: 1px solid var(--edge);
   }
   .tabs button {
     flex: 1;
@@ -288,7 +295,7 @@
     height: 100%;
   }
   .thumb:hover .img {
-    outline-color: #555;
+    outline-color: var(--border);
   }
   .thumb.current .img {
     outline-color: var(--accent);
@@ -315,7 +322,7 @@
     padding-inline-end: 6px;
   }
   .row.current {
-    background: #2d3f55;
+    background: var(--selected);
   }
   .twisty {
     flex: none;

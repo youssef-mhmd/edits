@@ -84,18 +84,20 @@ Notes:
 
 ### M1.4: Speed and memory (S)
 
-- [ ] Heavy pages: render worker processes in parallel, progressive rendering that can be cancelled, larger tiles for slow pages
-- [ ] Decide PRD open questions 5 and 6 (cold start and memory targets) and meet the result
-- [ ] Benchmarks on a reference-class machine (4 cores, 8 GB)
-- [ ] Real-world files in the corpus; no crash on any of them
+- [x] Heavy pages: render worker processes in parallel, progressive rendering that can be cancelled, larger tiles for slow pages *(up to three workers for pages over 40 ms; a render no longer wanted is stopped by ending its worker, since PDFium's pause-based progressive API needs unsafe FFI; 1024 px tiles for slow pages)*
+- [ ] Decide PRD open questions 5 and 6 (cold start and memory targets) and meet the result *(decided 2026-11-27: ≤ 500 ms, ≤ 200 MB above the no-file start. Cold start passes (436 ms). Memory does not: 236–568 MB above idle after scrolling and zooming, mostly the WebView2 GPU process)*
+- [ ] Benchmarks on a reference-class machine (4 cores, 8 GB) *(emulated with a 4-processor affinity mask only; real laptop still needed)*
+- [x] Real-world files in the corpus; no crash on any of them *(28 files, 104 damaged copies; 149 files with the synthetic ones, none crashes or hangs)*
+
+Notes: results and what was tried in [m1-results.md](m1-results.md). Still failing: memory; heavy pages (the real 107 MB Arabic textbook: page sharp 189 ms, zoom 133 ms; vector-heavy-5p: first page 730 ms, page sharp 132 ms); on 4 cores, cold start 557 ms and opening a 10 MB file 666 ms.
 
 ### M1.5: Shell and release 0.1 (M)
 
-- [ ] Print
-- [ ] Light and dark theme; settings
-- [ ] English and Arabic interface with mirrored layout
-- [ ] Windows installer and auto-update
-- [ ] Release 0.1
+- [x] Print *(Ctrl P: all, current page or a range, 150 or 300 dpi, then the WebView2 print dialog)*
+- [x] Light and dark theme; settings *(theme follows Windows by default; Ctrl ,)*
+- [x] English and Arabic interface with mirrored layout *(page view keeps left-to-right geometry)*
+- [ ] Windows installer and auto-update *(signed NSIS installer, 6.1 MB, English and Arabic; updater wired and release workflow written. Not tested end to end: needs the GitHub repository, the real endpoint in tauri.conf.json and a published release)*
+- [ ] Release 0.1 *(release notes in [release-notes.md](release-notes.md); version 0.1.0; not published)*
 
 ## M2: Annotate and mark up (release 0.2)
 

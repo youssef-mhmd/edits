@@ -1,0 +1,80 @@
+[
+  {
+    "wait": 600,
+    "log": "[document.documentElement.dataset.theme, document.documentElement.dir, document.querySelector('header').innerText.includes('Print')]"
+  },
+  {
+    "key": ",",
+    "code": "Comma",
+    "ctrl": true,
+    "vk": 188,
+    "wait": 300,
+    "log": "!!document.querySelector('[aria-labelledby=settings-title]')",
+    "shot": "shell-1-settings"
+  },
+  {
+    "eval": "document.querySelector('input[type=radio][value=light]').click()",
+    "wait": 200,
+    "log": "[document.documentElement.dataset.theme, getComputedStyle(document.body).backgroundColor]"
+  },
+  {
+    "eval": "document.querySelector('input[type=radio][value=ar]').click()",
+    "wait": 300,
+    "log": "[document.documentElement.dir, document.documentElement.lang, document.querySelector('#settings-title').textContent, getComputedStyle(document.querySelector('.scroller')).direction]",
+    "shot": "shell-2-arabic-light"
+  },
+  {
+    "eval": "[...document.querySelectorAll('.dialog button')].find(b => b.classList.contains('primary')).click()",
+    "wait": 300,
+    "log": "[!!document.querySelector('[aria-labelledby=settings-title]'), document.querySelector('header').innerText.replace(/\\s+/g, ' ')]",
+    "shot": "shell-3-arabic-toolbar"
+  },
+  {
+    "eval": "(() => { const v = __viewer; const before = v.currentPage(); v.goToPage(1); return [before, v.currentPage()]; })()",
+    "wait": 300,
+    "log": "[__viewer.currentPage(), __viewer.scroller.scrollLeft >= 0, __viewer.pagesInView(0).every(i => __viewer.hasContent(i))]"
+  },
+  {
+    "key": "p",
+    "code": "KeyP",
+    "ctrl": true,
+    "vk": 80,
+    "wait": 300,
+    "log": "!!document.querySelector('#print-title')",
+    "shot": "shell-4-print-dialog"
+  },
+  {
+    "eval": "(() => { const i = document.querySelector('.dialog input[type=text]'); i.focus(); i.value = '1-2'; i.dispatchEvent(new Event('input', { bubbles: true })); })()",
+    "wait": 200,
+    "log": "[document.querySelector('.dialog .primary').disabled, !!document.querySelector('.dialog .error')]"
+  },
+  {
+    "eval": "(() => { window.print = () => { window.__printed = document.querySelectorAll('#print-root img').length; }; document.querySelector('.dialog .primary').click(); })()",
+    "wait": 2500,
+    "log": "[window.__printed, [...document.querySelectorAll('#print-root img')].map(i => i.naturalWidth + 'x' + i.naturalHeight), !!document.querySelector('#print-title')]"
+  },
+  {
+    "eval": "(() => { const i = document.querySelector('header button[aria-label]:last-of-type'); window.dispatchEvent(new Event('afterprint')); return document.querySelectorAll('#print-root img').length; })()",
+    "wait": 200,
+    "log": "document.querySelectorAll('#print-root img').length"
+  },
+  {
+    "key": ",",
+    "code": "Comma",
+    "ctrl": true,
+    "vk": 188,
+    "wait": 300,
+    "log": "!!document.querySelector('[aria-labelledby=settings-title]')"
+  },
+  {
+    "eval": "(() => { document.querySelector('input[type=radio][value=dark]').click(); document.querySelector('input[type=radio][value=en]').click(); })()",
+    "wait": 300,
+    "log": "[document.documentElement.dataset.theme, document.documentElement.dir, document.querySelector('#settings-title').textContent]"
+  },
+  {
+    "key": "Escape",
+    "vk": 27,
+    "wait": 300,
+    "log": "!!document.querySelector('[aria-labelledby=settings-title]')"
+  }
+]

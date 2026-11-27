@@ -1,17 +1,19 @@
-//! The render thread and its public handle.
+//! The render thread, the render worker processes, and their public handle.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::process::Child;
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use pdfium_render::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::docs::{Docs, OpenDoc, Stamp, load_library};
 use crate::library::find_pdfium_dir;
 use crate::queue::{Priority, Queue};
+use crate::worker::{Worker, WorkerCommand};
 
 /// Identifies an open document. Assigned when the open is submitted.
 pub type DocId = u32;
@@ -21,18 +23,22 @@ pub type PageHits = (u32, Vec<[u32; 2]>);
 /// Identifies a queued job, for cancelling or re-prioritising it.
 pub type Ticket = u64;
 
-/// Pages kept loaded per document. Loading a page parses its content, so the
-/// pages being scrolled through stay loaded while their tiles render.
-const PAGE_CACHE: usize = 12;
-
-/// Default limit on this process's private memory before documents are
-/// reopened to release what PDFium holds (see `RenderThread::trim`).
+/// Default limit on a process's private memory before its documents are
+/// reopened to release what PDFium holds (see `Docs::trim`).
 pub const DEFAULT_MEMORY_LIMIT_MB: u64 = 128;
-/// How many newly loaded pages between memory checks.
-const PAGES_PER_MEMORY_CHECK: u32 = 16;
-/// Reopen only if memory grew at least this much since the last (re)open, so
-/// a file that is simply large once open is not reopened over and over.
-const MIN_GROWTH_TO_REOPEN: u64 = 32_000_000;
+
+/// A page whose render (loading it included) takes longer than this is
+/// heavy: once render workers are enabled, its renders go to them, in
+/// parallel, and can be stopped.
+pub const HEAVY_RENDER_US: u64 = 40_000;
+/// A cancelled render that has run this long is stopped by ending its worker.
+/// Shorter ones are left to finish: restarting a worker costs more.
+const KILL_AFTER: Duration = Duration::from_millis(30);
+/// A render in a worker that takes longer than this is stopped and the page
+/// shown as an error, so a hostile page cannot keep a worker busy forever.
+const RENDER_TIMEOUT: Duration = Duration::from_secs(20);
+/// Workers with nothing to do for this long exit, giving their memory back.
+const WORKER_IDLE_EXIT: Duration = Duration::from_secs(30);
 
 /// Priority used for opening and closing documents: before any rendering.
 const CONTROL_PRIORITY: Priority = Priority::MAX;
@@ -145,7 +151,7 @@ pub struct Tile {
     pub rgba: Vec<u8>,
     /// Time from submit until the render thread picked the job up.
     pub queued_us: u64,
-    /// Time spent rendering.
+    /// Time spent drawing, not counting loading (parsing) the page.
     pub render_us: u64,
 }
 
@@ -172,12 +178,55 @@ impl Job {
     }
 }
 
+/// Where an open document came from, so a worker can open its own copy.
+#[derive(Clone)]
+struct DocSource {
+    path: PathBuf,
+    password: Option<String>,
+    stamp: Option<Stamp>,
+}
+
+/// Render workers: how to start them and how many run.
+#[derive(Default)]
+struct Pool {
+    cmd: Option<WorkerCommand>,
+    pdfium_dir: Option<PathBuf>,
+    max: usize,
+    /// Driver threads, one per worker process.
+    drivers: usize,
+    /// Drivers waiting for a job.
+    idle: usize,
+    watchdog: bool,
+}
+
+/// A render taken by a worker driver.
+struct Running {
+    spec: RenderSpec,
+    /// Set once the job is sent to a worker; ending it stops the render.
+    child: Option<Arc<Mutex<Child>>>,
+    started: Instant,
+    /// Why the render was stopped, if it was.
+    stopped: Option<EngineError>,
+}
+
 #[derive(Default)]
 struct State {
     queue: Queue<Job>,
     next_ticket: Ticket,
     next_doc: DocId,
     stopping: bool,
+    /// Pages that render slowly; they go to workers when there are any.
+    heavy: HashSet<(DocId, u32)>,
+    sources: HashMap<DocId, DocSource>,
+    running: HashMap<Ticket, Running>,
+    pool: Pool,
+}
+
+/// True if `job` should run in a worker rather than on the render thread.
+fn offloadable(pool: &Pool, heavy: &HashSet<(DocId, u32)>, sources: &HashMap<DocId, DocSource>, job: &Job) -> bool {
+    pool.cmd.is_some()
+        && matches!(job, Job::Render { spec, .. }
+            if heavy.contains(&(spec.doc, spec.page)) && sources.contains_key(&spec.doc))
 }
 
 struct Shared {
@@ -193,10 +242,217 @@ impl Shared {
     }
 }
 
+/// Starts worker drivers for heavy renders that are waiting, up to the limit.
+fn ensure_drivers(shared: &Arc<Shared>, st: &mut State) {
+    if st.pool.cmd.is_none() || st.heavy.is_empty() || st.stopping {
+        return;
+    }
+    let State { queue, heavy, sources, pool, .. } = st;
+    let waiting = queue.count_where(|j| offloadable(pool, heavy, sources, j));
+    let mut free = pool.idle;
+    while pool.drivers < pool.max && free < waiting {
+        let s = shared.clone();
+        if std::thread::Builder::new().name("edits-worker".into()).spawn(move || drive_worker(s)).is_err() {
+            break;
+        }
+        pool.drivers += 1;
+        free += 1;
+    }
+}
+
+/// A heavy render taken off the queue by a driver.
+struct Taken {
+    ticket: Ticket,
+    priority: Priority,
+    spec: RenderSpec,
+    submitted: Instant,
+    reply: Reply<Tile>,
+    source: Option<DocSource>,
+    /// Documents the worker has open that have since been closed.
+    stale: Vec<DocId>,
+    cmd: Option<WorkerCommand>,
+    pdfium_dir: Option<PathBuf>,
+}
+
+/// Waits for the most urgent heavy render. None when stopping or idle for long.
+fn take_heavy(shared: &Shared, worker: Option<&Worker>) -> Option<Taken> {
+    let mut st = shared.lock();
+    st.pool.idle += 1;
+    let mut timed_out = false;
+    let found = loop {
+        if st.stopping {
+            break None;
+        }
+        let State { queue, heavy, sources, pool, .. } = &mut *st;
+        if let Some(x) = queue.pop_where(|j| offloadable(pool, heavy, sources, j)) {
+            break Some(x);
+        }
+        if timed_out {
+            break None;
+        }
+        let (g, t) = shared.wake.wait_timeout(st, WORKER_IDLE_EXIT).unwrap_or_else(|e| e.into_inner());
+        st = g;
+        timed_out = t.timed_out();
+    };
+    st.pool.idle -= 1;
+    match found {
+        Some((ticket, priority, Job::Render { spec, submitted, reply })) => {
+            let source = st.sources.get(&spec.doc).cloned();
+            let stale = worker
+                .map(|w| w.open.iter().copied().filter(|d| !st.sources.contains_key(d)).collect())
+                .unwrap_or_default();
+            st.running.insert(ticket, Running { spec, child: None, started: Instant::now(), stopped: None });
+            let (cmd, pdfium_dir) = (st.pool.cmd.clone(), st.pool.pdfium_dir.clone());
+            Some(Taken { ticket, priority, spec, submitted, reply, source, stale, cmd, pdfium_dir })
+        }
+        Some((ticket, priority, job)) => {
+            // Only renders are offloadable; never lose a job all the same.
+            st.queue.push(ticket, priority, job);
+            st.pool.drivers -= 1;
+            None
+        }
+        None => {
+            st.pool.drivers -= 1;
+            None
+        }
+    }
+}
+
+/// Hands a render back to the render thread. With `doc`, that document is
+/// no longer sent to workers; without, workers are switched off.
+fn give_back(shared: &Shared, t: Taken, doc: Option<DocId>) {
+    let mut st = shared.lock();
+    st.running.remove(&t.ticket);
+    match doc {
+        Some(d) => {
+            st.sources.remove(&d);
+        }
+        None => st.pool.cmd = None,
+    }
+    st.queue.push(t.ticket, t.priority, Job::Render { spec: t.spec, submitted: t.submitted, reply: t.reply });
+    drop(st);
+    shared.wake.notify_all();
+}
+
+/// One driver thread per worker process: takes heavy renders off the queue,
+/// sends them to its worker and replies with the result.
+fn drive_worker(shared: Arc<Shared>) {
+    let mut worker: Option<Worker> = None;
+    while let Some(t) = take_heavy(&shared, worker.as_ref()) {
+        let queued_us = t.submitted.elapsed().as_micros() as u64;
+        let (Some(cmd), Some(source)) = (t.cmd.clone(), t.source.clone()) else {
+            let doc = t.spec.doc;
+            give_back(&shared, t, Some(doc));
+            continue;
+        };
+        if worker.is_none() {
+            match Worker::spawn(&cmd, t.pdfium_dir.as_deref()) {
+                Ok(w) => worker = Some(w),
+                Err(e) => {
+                    log::warn!("cannot start a render worker: {e}");
+                    give_back(&shared, t, None);
+                    shared.lock().pool.drivers -= 1;
+                    return;
+                }
+            }
+        }
+        let w = worker.as_mut().expect("spawned above");
+        let mut alive = t.stale.iter().all(|d| w.close(*d).is_ok());
+        if alive && !w.open.contains(&t.spec.doc) {
+            match w.open(t.spec.doc, &source.path, source.password.as_deref(), source.stamp) {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    log::warn!("render worker cannot open {}: {e}", source.path.display());
+                    let doc = t.spec.doc;
+                    give_back(&shared, t, Some(doc));
+                    continue;
+                }
+                Err(_) => alive = false,
+            }
+        }
+        if !alive {
+            // The worker died opening the file: let the render thread have it.
+            worker = None;
+            let doc = t.spec.doc;
+            give_back(&shared, t, Some(doc));
+            continue;
+        }
+
+        // Send the render, unless it was cancelled while the worker got ready.
+        let Taken { ticket, spec, reply, .. } = t;
+        {
+            let mut st = shared.lock();
+            let Some(r) = st.running.get_mut(&ticket) else { continue };
+            if let Some(e) = r.stopped.take() {
+                st.running.remove(&ticket);
+                drop(st);
+                reply(Err(e));
+                continue;
+            }
+            r.child = Some(w.child.clone());
+            r.started = Instant::now();
+        }
+        let result = w.render(spec);
+        let stopped = shared.lock().running.remove(&ticket).and_then(|r| r.stopped);
+        match result {
+            Ok(Ok((w, h, rgba, render_us))) => reply(Ok(Tile { spec, w, h, rgba, queued_us, render_us })),
+            Ok(Err(e)) => reply(Err(e)),
+            Err(_) => {
+                worker = None;
+                reply(Err(stopped.unwrap_or_else(|| {
+                    log::warn!("render worker stopped on page {} of document {}", spec.page, spec.doc);
+                    EngineError::Render("the page could not be drawn".into())
+                })));
+            }
+        }
+    }
+}
+
+/// Stops worker renders that run too long.
+fn watchdog(shared: Arc<Shared>) {
+    loop {
+        std::thread::sleep(Duration::from_millis(250));
+        let mut st = shared.lock();
+        if st.stopping {
+            return;
+        }
+        for r in st.running.values_mut() {
+            if let Some(c) = &r.child
+                && r.stopped.is_none()
+                && r.started.elapsed() > RENDER_TIMEOUT
+            {
+                r.stopped = Some(EngineError::Render("the page takes too long to draw".into()));
+                crate::worker::kill(c);
+            }
+        }
+    }
+}
+
+/// Marks a running worker render cancelled, ending its worker if it has run
+/// long enough that finishing would cost more than starting a new one.
+fn cancel_running(r: &mut Running) {
+    if r.stopped.is_some() {
+        return;
+    }
+    r.stopped = Some(EngineError::Cancelled);
+    if let Some(c) = &r.child
+        && r.started.elapsed() >= KILL_AFTER
+    {
+        crate::worker::kill(c);
+    }
+}
+
 /// Handle to the render thread. Cheap to share behind an `Arc`.
 pub struct Engine {
     shared: Arc<Shared>,
     thread: Mutex<Option<JoinHandle<()>>>,
+    pdfium_dir: PathBuf,
+}
+
+/// A sensible number of render workers for this machine: one fewer than the
+/// cores, at most three.
+pub fn default_worker_count() -> usize {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).saturating_sub(1).clamp(1, 3)
 }
 
 impl Engine {
@@ -213,30 +469,50 @@ impl Engine {
             memory_limit: (DEFAULT_MEMORY_LIMIT_MB * 1_000_000).into(),
         });
         let (ready_tx, ready_rx) = mpsc::channel();
-        let lib_path = Pdfium::pdfium_platform_library_name_at_path(dir);
+        let lib_dir = dir.to_path_buf();
         let thread_shared = shared.clone();
         let thread = std::thread::Builder::new()
             .name("edits-render".into())
             .spawn(move || {
-                let pdfium = match Pdfium::bind_to_library(&lib_path) {
-                    Ok(bindings) => Pdfium::new(bindings),
-                    // Another engine in this process loaded it already; share it.
-                    Err(PdfiumError::PdfiumLibraryBindingsAlreadyInitialized) => Pdfium::default(),
+                let pdfium = match load_library(&lib_dir) {
+                    Ok(p) => p,
                     Err(e) => {
-                        let _ = ready_tx.send(Err(EngineError::LibraryLoad(e.to_string())));
+                        let _ = ready_tx.send(Err(e));
                         return;
                     }
                 };
                 let _ = ready_tx.send(Ok(()));
-                // The Pdfium handle must outlive every document opened from it;
-                // it lives as long as this thread, which is the program.
-                let pdfium: &'static Pdfium = Box::leak(Box::new(pdfium));
-                RenderThread { pdfium, docs: HashMap::new(), loads_since_check: 0, baseline: 0 }.run(&thread_shared);
+                RenderThread { docs: Docs::new(pdfium), shared: thread_shared }.run();
             })
             .map_err(|e| EngineError::LibraryLoad(e.to_string()))?;
 
         ready_rx.recv().map_err(|_| EngineError::Stopped)??;
-        Ok(Self { shared, thread: Mutex::new(Some(thread)) })
+        Ok(Self { shared, thread: Mutex::new(Some(thread)), pdfium_dir: dir.to_path_buf() })
+    }
+
+    /// Lets heavy pages render in up to `max` worker processes started with
+    /// `cmd`. Workers start when a heavy page is first seen and exit when idle.
+    /// If a worker cannot be started, everything stays on the render thread.
+    pub fn enable_workers(&self, cmd: WorkerCommand, max: usize) {
+        let mut st = self.shared.lock();
+        st.pool.cmd = (max > 0).then_some(cmd);
+        st.pool.max = max;
+        st.pool.pdfium_dir = Some(self.pdfium_dir.clone());
+        if !st.pool.watchdog && max > 0 {
+            let s = self.shared.clone();
+            st.pool.watchdog =
+                std::thread::Builder::new().name("edits-watchdog".into()).spawn(move || watchdog(s)).is_ok();
+        }
+    }
+
+    /// Number of worker driver threads running (each with at most one process).
+    pub fn workers(&self) -> usize {
+        self.shared.lock().pool.drivers
+    }
+
+    /// True if page `page` of `doc` has been found slow to render.
+    pub fn is_heavy(&self, doc: DocId, page: u32) -> bool {
+        self.shared.lock().heavy.contains(&(doc, page))
     }
 
     fn submit(&self, priority: Priority, make: impl FnOnce(&mut State) -> Job) -> Ticket {
@@ -249,9 +525,13 @@ impl Engine {
         }
         st.next_ticket += 1;
         let ticket = st.next_ticket;
+        let offload = offloadable(&st.pool, &st.heavy, &st.sources, &job);
         st.queue.push(ticket, priority, job);
+        if offload {
+            ensure_drivers(&self.shared, &mut st);
+        }
         drop(st);
-        self.shared.wake.notify_one();
+        self.shared.wake.notify_all();
         ticket
     }
 
@@ -284,12 +564,17 @@ impl Engine {
 
     /// Closes a document. Its queued renders are cancelled.
     pub fn close(&self, doc: DocId) {
+        {
+            let mut st = self.shared.lock();
+            st.sources.remove(&doc);
+            st.heavy.retain(|(d, _)| *d != doc);
+        }
         self.cancel_where(|s| s.doc == doc);
         self.submit(CONTROL_PRIORITY, |_| Job::Close { doc });
     }
 
-    /// Queues a render. `reply` runs on the render thread, or on the
-    /// cancelling thread with [`EngineError::Cancelled`].
+    /// Queues a render. `reply` runs on the render thread or a worker
+    /// driver thread, or on the cancelling thread with [`EngineError::Cancelled`].
     pub fn render_with(
         &self,
         spec: RenderSpec,
@@ -398,22 +683,33 @@ impl Engine {
         })
     }
 
-    /// Cancels a queued job. Returns false if it already started or finished.
+    /// Cancels a queued job, or a render running in a worker. Returns false
+    /// if it already finished or runs on the render thread.
     pub fn cancel(&self, ticket: Ticket) -> bool {
-        let job = self.shared.lock().queue.remove(ticket);
+        let mut st = self.shared.lock();
+        let job = st.queue.remove(ticket);
         match job {
             Some(job) => {
+                drop(st);
                 job.fail(EngineError::Cancelled);
                 true
             }
-            None => false,
+            None => st.running.get_mut(&ticket).map(cancel_running).is_some(),
         }
     }
 
-    /// Cancels every queued render whose spec matches. Returns how many.
+    /// Cancels every queued render whose spec matches, and stops matching
+    /// renders running in workers. Returns how many were cancelled.
     pub fn cancel_where(&self, mut pred: impl FnMut(&RenderSpec) -> bool) -> usize {
-        let drained = self.shared.lock().queue.drain_where(|job| matches!(job, Job::Render { spec, .. } if pred(spec)));
-        let n = drained.len();
+        let mut st = self.shared.lock();
+        let drained = st.queue.drain_where(|job| matches!(job, Job::Render { spec, .. } if pred(spec)));
+        let mut stopped = 0;
+        for r in st.running.values_mut().filter(|r| r.stopped.is_none() && pred(&r.spec)) {
+            cancel_running(r);
+            stopped += 1;
+        }
+        drop(st);
+        let n = drained.len() + stopped;
         for (_, job) in drained {
             job.fail(EngineError::Cancelled);
         }
@@ -443,6 +739,12 @@ impl Engine {
         let drained = {
             let mut st = self.shared.lock();
             st.stopping = true;
+            for r in st.running.values_mut() {
+                r.stopped = Some(EngineError::Stopped);
+                if let Some(c) = &r.child {
+                    crate::worker::kill(c);
+                }
+            }
             st.queue.drain_where(|_| true)
         };
         self.shared.wake.notify_all();
@@ -464,106 +766,26 @@ impl Drop for Engine {
 // ---------------------------------------------------------------------------
 // Render thread
 
-/// A short, readable reason for a PDFium failure, for display on the page.
-fn describe(e: &PdfiumError) -> String {
-    match e {
-        PdfiumError::PdfiumLibraryInternalError(i) => match i {
-            PdfiumInternalError::FileError => "the file could not be read",
-            PdfiumInternalError::PasswordError => "a password is needed",
-            PdfiumInternalError::SecurityError => "the file uses an unsupported security handler",
-            _ => "the page is damaged",
-        }
-        .to_string(),
-        PdfiumError::IoError(e) => e.to_string(),
-        other => format!("{other:?}").split_whitespace().collect::<Vec<_>>().join(" "),
-    }
-}
-
-struct OpenDoc {
-    // Declared before `doc` so pages drop first.
-    pages: Vec<(u32, PdfPage<'static>)>,
-    doc: PdfDocument<'static>,
-    page_count: u32,
-    path: PathBuf,
-    password: Option<String>,
-    /// File size and modification time at open; a reopen is skipped if the
-    /// file has changed since.
-    stamp: Option<(u64, std::time::SystemTime)>,
-    /// Pages loaded since the document was (re)opened.
-    loads: u32,
-    /// Text of each page once read (the text index). Kept across reopens.
-    texts: Vec<Option<std::sync::Arc<str>>>,
-}
-
-impl OpenDoc {
-    /// The page's characters, from the index or read now and stored.
-    fn chars(&mut self, index: u32) -> Result<std::sync::Arc<str>, EngineError> {
-        if let Some(Some(t)) = self.texts.get(index as usize) {
-            return Ok(t.clone());
-        }
-        let text: std::sync::Arc<str> = crate::text::page_chars(self.page(index)?).into();
-        self.texts[index as usize] = Some(text.clone());
-        Ok(text)
-    }
-}
-
-fn file_stamp(path: &Path) -> Option<(u64, std::time::SystemTime)> {
-    let m = std::fs::metadata(path).ok()?;
-    Some((m.len(), m.modified().ok()?))
-}
-
-/// Private memory of this process, in bytes.
-fn process_memory() -> u64 {
-    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
-    let Ok(mut sys) = System::new() else { return 0 };
-    let pid = Pid::from_u32(std::process::id());
-    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), true, ProcessRefreshKind::nothing().with_memory());
-    // Windows: private bytes. Elsewhere sysinfo's virtual size is not useful; use resident.
-    sys.process(pid).map(|p| if cfg!(windows) { p.virtual_memory() } else { p.memory() }).unwrap_or(0)
-}
-
-impl OpenDoc {
-    fn page(&mut self, index: u32) -> Result<&PdfPage<'static>, EngineError> {
-        if index >= self.page_count {
-            return Err(EngineError::PageOutOfRange(index));
-        }
-        if let Some(pos) = self.pages.iter().position(|(i, _)| *i == index) {
-            // Move to the back: most recently used.
-            let entry = self.pages.remove(pos);
-            self.pages.push(entry);
-        } else {
-            let page = self.doc.pages().get(index as PdfPageIndex).map_err(|e| EngineError::Render(describe(&e)))?;
-            if self.pages.len() >= PAGE_CACHE {
-                self.pages.remove(0);
-            }
-            self.pages.push((index, page));
-            self.loads += 1;
-        }
-        Ok(&self.pages.last().expect("just pushed").1)
-    }
-}
-
 struct RenderThread {
-    pdfium: &'static Pdfium,
-    docs: HashMap<DocId, OpenDoc>,
-    loads_since_check: u32,
-    /// Process memory right after the last open or reopen.
-    baseline: u64,
+    docs: Docs,
+    shared: Arc<Shared>,
 }
 
 impl RenderThread {
-    fn run(mut self, shared: &Shared) {
+    fn run(mut self) {
         loop {
             let job = {
-                let mut st = shared.lock();
+                let mut st = self.shared.lock();
                 loop {
                     if st.stopping {
                         return;
                     }
-                    if let Some((_, job)) = st.queue.pop() {
+                    // Heavy renders are left for the workers, if there are any.
+                    let State { queue, heavy, sources, pool, .. } = &mut *st;
+                    if let Some((_, _, job)) = queue.pop_where(|j| !offloadable(pool, heavy, sources, j)) {
                         break job;
                     }
-                    st = shared.wake.wait(st).unwrap_or_else(|e| e.into_inner());
+                    st = self.shared.wake.wait(st).unwrap_or_else(|e| e.into_inner());
                 }
             };
             // A panic inside PDFium bindings must not take the thread down.
@@ -571,94 +793,59 @@ impl RenderThread {
             if outcome.is_err() {
                 log::error!("render job panicked");
             }
-            self.trim(shared.memory_limit.load(std::sync::atomic::Ordering::Relaxed));
+            self.docs.trim(self.shared.memory_limit.load(std::sync::atomic::Ordering::Relaxed));
         }
     }
 
     fn handle(&mut self, job: Job) {
         match job {
             Job::Open { doc, path, password, reply } => reply(self.open(doc, &path, password.as_deref())),
-            Job::Close { doc } => {
-                self.docs.remove(&doc);
-            }
-            Job::Call { doc, call } => match self.docs.get_mut(&doc) {
+            Job::Close { doc } => self.docs.close(doc),
+            Job::Call { doc, call } => match self.docs.docs.get_mut(&doc) {
                 Some(od) => call(Ok(od)),
                 None => call(Err(EngineError::UnknownDoc(doc))),
             },
             Job::Render { spec, submitted, reply } => {
                 let queued_us = submitted.elapsed().as_micros() as u64;
                 let start = Instant::now();
-                let result = self.render(&spec).map(|(w, h, rgba)| Tile {
+                let result = self.docs.render(&spec);
+                let total_us = start.elapsed().as_micros() as u64;
+                if total_us > HEAVY_RENDER_US {
+                    // Later renders of this page go to workers, including
+                    // the ones already queued.
+                    let mut st = self.shared.lock();
+                    if st.heavy.insert((spec.doc, spec.page)) {
+                        ensure_drivers(&self.shared, &mut st);
+                        drop(st);
+                        self.shared.wake.notify_all();
+                    }
+                }
+                reply(result.map(|(w, h, rgba, load_us)| Tile {
                     spec,
                     w,
                     h,
                     rgba,
                     queued_us,
-                    render_us: start.elapsed().as_micros() as u64,
-                });
-                reply(result)
+                    render_us: total_us.saturating_sub(load_us),
+                }))
             }
         }
-    }
-
-    /// PDFium keeps every object it has parsed, image data included, for the
-    /// life of a document, so reading through a large scanned or image-heavy
-    /// file would hold most of the file in memory. Every few page loads,
-    /// check memory; over the limit, reopen the documents that have loaded
-    /// pages, which frees all of it. Reopening reads only the file's
-    /// cross-reference data (milliseconds), and pages reload on demand.
-    fn trim(&mut self, limit: u64) {
-        let loads: u32 = self.docs.values().map(|d| d.loads).sum();
-        if loads < self.loads_since_check + PAGES_PER_MEMORY_CHECK {
-            return;
-        }
-        self.loads_since_check = loads;
-        let now = process_memory();
-        if now <= limit || now < self.baseline + MIN_GROWTH_TO_REOPEN {
-            return;
-        }
-        for od in self.docs.values_mut().filter(|d| d.loads > 0) {
-            if file_stamp(&od.path) != od.stamp {
-                continue; // changed on disk: keep what we have rather than show a different file
-            }
-            od.pages.clear();
-            match self.pdfium.load_pdf_from_file(&od.path, od.password.as_deref()) {
-                Ok(doc) => {
-                    od.doc = doc;
-                    od.loads = 0;
-                }
-                Err(e) => log::warn!("reopen of {} failed: {}", od.path.display(), describe(&e)),
-            }
-        }
-        self.loads_since_check = self.docs.values().map(|d| d.loads).sum();
-        self.baseline = process_memory();
     }
 
     fn open(&mut self, id: DocId, path: &Path, password: Option<&str>) -> Result<DocInfo, EngineError> {
         let start = Instant::now();
-        let doc = self.pdfium.load_pdf_from_file(path, password).map_err(|e| match e {
-            PdfiumError::PdfiumLibraryInternalError(PdfiumInternalError::PasswordError) => {
-                EngineError::PasswordRequired
-            }
-            PdfiumError::PdfiumLibraryInternalError(PdfiumInternalError::FormatError) => {
-                EngineError::Open("the file is damaged or is not a PDF".into())
-            }
-            PdfiumError::PdfiumLibraryInternalError(PdfiumInternalError::FileError) => {
-                EngineError::Open("the file could not be read".into())
-            }
-            PdfiumError::IoError(e) => EngineError::Open(e.to_string()),
-            other => EngineError::Open(describe(&other)),
-        })?;
+        let od = self.docs.load(id, path, password)?;
         // Read sizes one page at a time: a single broken page must not make
         // the whole document unreadable. It gets the previous page's size
         // (or A4) and is reported, and rendering it later fails on its own.
-        let page_count = doc.pages().len() as u32;
+        let page_count = od.page_count;
         let mut pages = Vec::with_capacity(page_count as usize);
         let mut broken_pages = Vec::new();
         for i in 0..page_count {
-            let size = doc
+            let size = od
+                .doc
                 .pages()
-                .page_size(i as PdfPageIndex)
+                .page_size(i as pdfium_render::prelude::PdfPageIndex)
                 .ok()
                 .map(|r| PageSize { w: r.width().value, h: r.height().value })
                 .filter(|s| s.w.is_finite() && s.h.is_finite() && s.w >= 1.0 && s.h >= 1.0);
@@ -667,54 +854,8 @@ impl RenderThread {
                 pages.last().copied().unwrap_or(PageSize { w: 595.0, h: 842.0 })
             }));
         }
-        self.baseline = process_memory();
-        self.docs.insert(
-            id,
-            OpenDoc {
-                pages: Vec::new(),
-                doc,
-                page_count,
-                path: path.to_path_buf(),
-                password: password.map(str::to_string),
-                stamp: file_stamp(path),
-                loads: 0,
-                texts: vec![None; page_count as usize],
-            },
-        );
+        let source = DocSource { path: path.to_path_buf(), password: password.map(str::to_string), stamp: od.stamp };
+        self.shared.lock().sources.insert(id, source);
         Ok(DocInfo { doc: id, page_count, pages, broken_pages, open_us: start.elapsed().as_micros() as u64 })
-    }
-
-    fn render(&mut self, spec: &RenderSpec) -> Result<(u32, u32, Vec<u8>), EngineError> {
-        let doc = self.docs.get_mut(&spec.doc).ok_or(EngineError::UnknownDoc(spec.doc))?;
-        let page = doc.page(spec.page)?;
-        let w = spec.w.min(spec.page_w - spec.x);
-        let h = spec.h.min(spec.page_h - spec.y);
-        let render_err = |e: PdfiumError| EngineError::Render(describe(&e));
-
-        let mut bitmap = PdfBitmap::empty(w as Pixels, h as Pixels, PdfBitmapFormat::BGRA).map_err(render_err)?;
-        let config = PdfRenderConfig::new()
-            .set_fixed_size(spec.page_w as Pixels, spec.page_h as Pixels)
-            .set_origin(-(spec.x as Pixels), -(spec.y as Pixels))
-            .set_format(PdfBitmapFormat::BGRA)
-            .set_reverse_byte_order(true)
-            .render_annotations(true)
-            .render_form_data(true)
-            // Keeps PDFium from holding every decoded image it has drawn;
-            // without it, background previews of image-heavy files grow the
-            // process by about 100 MB per 1,000 pages.
-            .limit_render_image_cache_size(true)
-            .rotate(
-                match spec.rotation {
-                    1 => PdfPageRenderRotation::Degrees90,
-                    2 => PdfPageRenderRotation::Degrees180,
-                    3 => PdfPageRenderRotation::Degrees270,
-                    _ => PdfPageRenderRotation::None,
-                },
-                false,
-            );
-        // The tile is clipped to the page above, so the white clear that
-        // pdfium-render applies to the page rectangle covers the whole bitmap.
-        page.render_into_bitmap_with_config(&mut bitmap, &config).map_err(render_err)?;
-        Ok((w, h, bitmap.as_raw_bytes()))
     }
 }

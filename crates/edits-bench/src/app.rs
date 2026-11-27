@@ -192,11 +192,11 @@ pub fn run(exe: &Path, file: &Path, runs: usize, json: Option<&str>) -> Res<bool
         Check::new("page sharp after scrolling into view (p95)", s.p95, targets::SHARP_AFTER_SCROLL_MS, "ms"),
         Check::new("zoom step to sharp (p95)", z.p95, targets::ZOOM_SHARP_MS, "ms"),
     ];
-    if !memory.is_empty() {
+    if !memory.is_empty() && !idle_memory.is_empty() {
         checks.push(Check::new(
-            "memory at end of run, private (median)",
-            median(&memory),
-            targets::MEMORY_100P_MB,
+            "memory at end of run above no-file start (median)",
+            median(&memory) - median(&idle_memory),
+            targets::MEMORY_ABOVE_IDLE_MB,
             "MB",
         ));
     }

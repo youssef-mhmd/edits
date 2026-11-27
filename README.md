@@ -2,7 +2,7 @@
 
 A fast desktop PDF reader and editor for Windows, with first-class Arabic support. Offline and open source (Apache-2.0).
 
-Status: **M0, foundation and speed spike.** Not usable yet. See [docs/PRD.md](docs/PRD.md) for the plan and [docs/milestones.md](docs/milestones.md) for progress.
+Status: **0.1, reader.** Reads, searches, prints; English and Arabic interface. See [docs/release-notes.md](docs/release-notes.md), [docs/PRD.md](docs/PRD.md) for the plan and [docs/milestones.md](docs/milestones.md) for progress.
 
 ## Build
 
@@ -12,12 +12,14 @@ Requirements: Windows 10/11 x64, Rust (stable, MSVC), Node.js 22+, WebView2 runt
 ./scripts/fetch-pdfium.ps1     # downloads the pinned PDFium build into vendor/
 npm ci
 npx tauri dev                  # run in development
-npx tauri build                # installer in target/release/bundle/nsis/
+./scripts/build-installer.ps1  # signed installer in target/release/bundle/nsis/
 ```
+
+The installer is signed for the updater with a private key kept outside the repository (default `~/.tauri/edits-updater.key`; its public key is in `tauri.conf.json`). Without the key, build with `npx tauri build --no-bundle`. Releases: push a `v*` tag; `.github/workflows/release.yml` builds the installer and `latest.json` into a draft GitHub release (needs the `TAURI_SIGNING_PRIVATE_KEY` secret). Regenerate `licenses/third-party.txt` with `node scripts/gen-licenses.mjs` after changing dependencies.
 
 Open a file with the Open button (Ctrl O), by dropping it on the window, with `edits.exe path\to\file.pdf`, or after installing, from "Open with" in Explorer.
 
-Keys: Ctrl + / Ctrl − / Ctrl + wheel zoom; Ctrl 0 fit width; Ctrl 2 fit page; Ctrl 1 actual size; Ctrl Shift + / Ctrl Shift − rotate; Ctrl G go to page; Page Up/Down, Space, Home, End; ← → turn pages in single and two-page views; Alt ← / Alt → back and forward after links and bookmarks; F4 pages and bookmarks panel; Ctrl F find, F3 / Shift F3 next and previous; drag to select text, double-click a word, triple-click a line, Ctrl A select page, Ctrl C copy; Ctrl Tab / Ctrl Shift Tab switch tabs; Ctrl W close tab.
+Keys: Ctrl + / Ctrl − / Ctrl + wheel zoom; Ctrl 0 fit width; Ctrl 2 fit page; Ctrl 1 actual size; Ctrl Shift + / Ctrl Shift − rotate; Ctrl G go to page; Page Up/Down, Space, Home, End; ← → turn pages in single and two-page views; Alt ← / Alt → back and forward after links and bookmarks; F4 pages and bookmarks panel; Ctrl F find, F3 / Shift F3 next and previous; drag to select text, double-click a word, triple-click a line, Ctrl A select page, Ctrl C copy; Ctrl Tab / Ctrl Shift Tab switch tabs; Ctrl W close tab; Ctrl P print; Ctrl , settings (theme, language, updates).
 
 ## Tests and benchmarks
 
@@ -25,7 +27,8 @@ Keys: Ctrl + / Ctrl − / Ctrl + wheel zoom; Ctrl 0 fit width; Ctrl 2 fit page; 
 cargo test --workspace
 ./scripts/gen-corpus.ps1 -Large             # test corpus into corpus/files (about 520 MB with -Large)
 target/release/edits-bench check            # every corpus file opens and renders without a crash
-target/release/edits-bench core FILE...     # engine timings against PRD section 7
+target/release/edits-bench fuzz-corpus corpus/files/real corpus/files/fuzzed   # damaged copies of real files, for check
+target/release/edits-bench core FILE...     # engine timings against PRD section 7 (--workers 0: no render workers)
 target/release/edits-bench app --exe target/release/edits.exe FILE   # real app: start, open, scroll, zoom, memory
 target/release/edits-bench lopdf-check      # lopdf load, decrypt, clean and save on every corpus file
 target/release/edits-bench mem-previews FILE # engine memory while rendering every page
@@ -39,7 +42,7 @@ powershell -File tests/close.ps1             # closing the window ends the app (
 ## Layout
 
 ```
-crates/edits-core/   PDFium wrapper, render thread, priority queue
+crates/edits-core/   PDFium wrapper, render thread, priority queue, render worker processes
 crates/edits-bench/  benchmarks, corpus generator, corpus checks
 src-tauri/           Tauri app: commands, tile transports
 ui/                  Svelte 5 front end; ui/src/viewer.ts is the page view

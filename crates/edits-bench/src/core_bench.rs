@@ -2,6 +2,8 @@
 //!
 //! The viewport model is a 1280 x 800 window at 125% scaling (1600 x 1000
 //! device pixels), with the page at fit-width (1400 device pixels wide).
+//! Tiles of a view are requested all at once, as the viewer does, and a page
+//! whose 512 px tiles are slow gets 1024 px tiles (viewer.ts `tileSide`).
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -51,22 +53,51 @@ fn page_px(info: &DocInfo, page: u32, width_px: u32) -> (u32, u32) {
     (width_px, h)
 }
 
+/// A 512 px tile slower than this means the page gets 1024 px tiles.
+const SLOW_TILE_MS: f64 = 40.0;
+
+/// Pages found slow to tile, as the viewer remembers them.
+type SlowPages = std::collections::HashSet<u32>;
+
 /// Renders the tiles of `page` that intersect a viewport-sized window at
-/// (`vx`, `vy`) in page pixels. Returns per-tile render times.
-fn render_view(engine: &Engine, info: &DocInfo, page: u32, page_w: u32, vx: u32, vy: u32) -> Res<Vec<f64>> {
+/// (`vx`, `vy`) in page pixels, all requested at once. Returns per-tile
+/// render times.
+fn render_view(
+    engine: &Engine,
+    info: &DocInfo,
+    slow: &mut SlowPages,
+    page: u32,
+    page_w: u32,
+    vx: u32,
+    vy: u32,
+) -> Res<Vec<f64>> {
     let (pw, ph) = page_px(info, page, page_w);
-    let mut times = Vec::new();
-    let mut ty = vy / TILE * TILE;
+    let side = if slow.contains(&page) { 2 * TILE } else { TILE };
+    let (tx_, rx) = std::sync::mpsc::channel();
+    let mut n = 0;
+    let mut ty = vy / side * side;
     while ty < (vy + VIEW_H).min(ph) {
-        let mut tx = vx / TILE * TILE;
+        let mut tx = vx / side * side;
         while tx < (vx + VIEW_W).min(pw) {
             let spec =
-                RenderSpec { doc: info.doc, page, page_w: pw, page_h: ph, x: tx, y: ty, w: TILE, h: TILE, rotation: 0 };
-            let tile = engine.render(spec, 10)?;
-            times.push(tile.render_us as f64 / 1000.0);
-            tx += TILE;
+                RenderSpec { doc: info.doc, page, page_w: pw, page_h: ph, x: tx, y: ty, w: side, h: side, rotation: 0 };
+            let t = tx_.clone();
+            engine.render_with(spec, 10, move |r| {
+                let _ = t.send(r);
+            });
+            n += 1;
+            tx += side;
         }
-        ty += TILE;
+        ty += side;
+    }
+    let mut times = Vec::new();
+    for _ in 0..n {
+        let tile = rx.recv()??;
+        let ms = tile.render_us as f64 / 1000.0;
+        if side == TILE && ms > SLOW_TILE_MS {
+            slow.insert(page);
+        }
+        times.push(ms);
     }
     Ok(times)
 }
@@ -88,9 +119,10 @@ fn bench_file(engine: &Engine, file: &Path) -> Res<FileResult> {
     let open_ms = ms(t);
 
     // First page: preview, then the sharp viewport.
+    let mut slow = SlowPages::new();
     preview(engine, &info, 0)?;
     let first_preview_ms = ms(t);
-    let mut tile_times = render_view(engine, &info, 0, FIT_W, 0, 0)?;
+    let mut tile_times = render_view(engine, &info, &mut slow, 0, FIT_W, 0, 0)?;
     let first_sharp_ms = ms(t);
 
     // Zoom steps on page 0: 125%, 150%, 175%, 200% of fit width, centred.
@@ -101,7 +133,7 @@ fn bench_file(engine: &Engine, file: &Path) -> Res<FileResult> {
         let vx = pw.saturating_sub(VIEW_W) / 2;
         let vy = ph.saturating_sub(VIEW_H) / 2;
         let t = Instant::now();
-        tile_times.extend(render_view(engine, &info, 0, w, vx, vy)?);
+        tile_times.extend(render_view(engine, &info, &mut slow, 0, w, vx, vy)?);
         zoom.push(ms(t));
     }
 
@@ -113,7 +145,7 @@ fn bench_file(engine: &Engine, file: &Path) -> Res<FileResult> {
         preview(engine, &info, page)?;
         previews.push(ms(t));
         let t = Instant::now();
-        tile_times.extend(render_view(engine, &info, page, FIT_W, 0, 0)?);
+        tile_times.extend(render_view(engine, &info, &mut slow, page, FIT_W, 0, 0)?);
         sharps.push(ms(t));
     }
     engine.close(info.doc);
@@ -151,14 +183,18 @@ fn bench_file(engine: &Engine, file: &Path) -> Res<FileResult> {
     })
 }
 
-pub fn run(files: &[PathBuf], json: Option<&str>) -> Res<bool> {
+pub fn run(files: &[PathBuf], json: Option<&str>, workers: Option<usize>) -> Res<bool> {
     if files.is_empty() {
         return Err("core needs at least one FILE".into());
     }
     let t = Instant::now();
     let engine = Engine::start()?;
     let engine_start_ms = ms(t);
-    println!("engine start (load PDFium, start thread): {engine_start_ms:.1} ms");
+    let workers = workers.unwrap_or_else(edits_core::default_worker_count);
+    if let Some(cmd) = edits_core::worker::WorkerCommand::current_exe() {
+        engine.enable_workers(cmd, workers);
+    }
+    println!("engine start (load PDFium, start thread): {engine_start_ms:.1} ms; up to {workers} render workers");
 
     let mut results = Vec::new();
     let mut all_pass = true;

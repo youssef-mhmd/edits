@@ -535,3 +535,55 @@ pub fn make_scan(input: &Path, output: &Path) -> Res<()> {
     save(doc, dir, &output.file_name().unwrap_or_default().to_string_lossy())?;
     Ok(())
 }
+
+/// Writes damaged copies of the PDFs in `src` (up to 20 MB each) to `out`:
+/// truncated, with bytes flipped, with a block zeroed and with a block
+/// repeated. Deterministic, so a file that breaks the app can be made again.
+/// `edits-bench fuzz-corpus SRC OUT [--per-file N]`
+pub fn fuzz(src: &Path, out: &Path, per_file: usize) -> Res<()> {
+    std::fs::create_dir_all(out)?;
+    let mut written = 0;
+    for path in crate::check::pdf_files(src)? {
+        let data = std::fs::read(&path)?;
+        if data.len() < 64 || data.len() > 20_000_000 {
+            continue;
+        }
+        let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        // Seed from the name: the same input always gives the same copies.
+        let mut seed = stem.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3));
+        let mut rand = move |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n.max(1) as u64) as usize
+        };
+        for k in 0..per_file {
+            let mut d = data.clone();
+            match k % 4 {
+                0 => d.truncate(16 + rand(d.len() - 16)),
+                1 => {
+                    for _ in 0..200 {
+                        let i = rand(d.len());
+                        d[i] ^= 1 << rand(8);
+                    }
+                }
+                2 => {
+                    let at = rand(d.len());
+                    let end = (at + 4096).min(d.len());
+                    d[at..end].fill(0);
+                }
+                _ => {
+                    let at = rand(d.len());
+                    let end = (at + 1 + rand(8192)).min(d.len());
+                    let block = d[at..end].to_vec();
+                    let to = rand(d.len());
+                    d.splice(to..to, block);
+                }
+            }
+            std::fs::write(out.join(format!("{stem}-fuzz-{k}.pdf")), d)?;
+            written += 1;
+        }
+    }
+    println!("wrote {written} damaged copies to {}", out.display());
+    Ok(())
+}

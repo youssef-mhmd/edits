@@ -1,0 +1,272 @@
+// Interface text in English and Arabic. `t()` reads the current language
+// from reactive state, so Svelte markup that calls it updates when the
+// language changes. Arabic turns the whole layout right to left; the page
+// view itself stays left to right (see app.css).
+
+export type Lang = "en" | "ar";
+export type LangSetting = Lang | "system";
+
+const en = {
+  // App shell
+  "app.open": "Open",
+  "app.openPdf": "Open a PDF",
+  "app.openHint": "or press Ctrl O, or drop files here",
+  "app.openTitle": "Open a PDF (Ctrl O)",
+  "app.recent": "Recent",
+  "app.recentPage": "page {page} of {pages}",
+  "app.recentPages": "{pages} pages",
+  "app.forget": "Remove {name} from recent files",
+  "app.forgetTitle": "Remove from this list",
+  "app.dismiss": "Dismiss",
+  "app.documents": "Open documents",
+  "app.closeTab": "Close {name}",
+  "app.closeTabTitle": "Close (Ctrl W)",
+  // Toolbar
+  "bar.panel": "Panel",
+  "bar.panelTitle": "Pages and bookmarks (F4)",
+  "bar.back": "Back",
+  "bar.backTitle": "Back (Alt ←)",
+  "bar.forward": "Forward",
+  "bar.forwardTitle": "Forward (Alt →)",
+  "bar.pageNumber": "Page number",
+  "bar.goTo": "Go to page (Ctrl G)",
+  "bar.zoomOut": "Zoom out",
+  "bar.zoomOutTitle": "Zoom out (Ctrl -)",
+  "bar.zoomIn": "Zoom in",
+  "bar.zoomInTitle": "Zoom in (Ctrl +)",
+  "bar.fitWidth": "Fit width",
+  "bar.fitWidthTitle": "Fit width, follows the window size (Ctrl 0)",
+  "bar.fitPage": "Fit page",
+  "bar.fitPageTitle": "Fit page, follows the window size (Ctrl 2)",
+  "bar.view": "View",
+  "bar.layout": "Page layout",
+  "bar.continuous": "Continuous",
+  "bar.single": "Single page",
+  "bar.twoPage": "Two pages",
+  "bar.rtl": "RTL",
+  "bar.rtlTitle": "Right to left: first page of each spread on the right, as in Arabic books",
+  "bar.rotateLeft": "Rotate left",
+  "bar.rotateLeftTitle": "Rotate view left (Ctrl Shift -)",
+  "bar.rotateRight": "Rotate right",
+  "bar.rotateRightTitle": "Rotate view right (Ctrl Shift +)",
+  "bar.print": "Print",
+  "bar.printTitle": "Print (Ctrl P)",
+  "bar.settings": "Settings",
+  "bar.settingsTitle": "Settings (Ctrl ,)",
+  // Password
+  "pw.protected": "{name} is protected by a password.",
+  "pw.password": "Password",
+  "pw.wrong": "That password is not correct. Try again.",
+  "pw.open": "Open",
+  "common.cancel": "Cancel",
+  "common.close": "Close",
+  // Side panel
+  "side.label": "Side panel",
+  "side.pages": "Pages",
+  "side.bookmarks": "Bookmarks",
+  "side.page": "Page {n}",
+  "side.loading": "Loading…",
+  "side.noBookmarks": "This document has no bookmarks.",
+  "side.collapse": "Collapse",
+  "side.expand": "Expand",
+  // Find
+  "find.placeholder": "Find in document",
+  "find.of": "{n} of {total}",
+  "find.searching": "Searching… {done} of {total} pages",
+  "find.none": "No matches",
+  "find.prev": "Previous match",
+  "find.prevTitle": "Previous (Shift Enter, Shift F3)",
+  "find.next": "Next match",
+  "find.nextTitle": "Next (Enter, F3)",
+  "find.case": "Match case",
+  "find.word": "Word",
+  "find.wordTitle": "Whole words only",
+  "find.diacritics": "Ignore Arabic diacritics (harakat) and tatweel",
+  "find.variants": "Treat letter variants as equal: أ إ آ = ا, ى = ي, ة = ه, ١٢٣ = 123",
+  "find.close": "Close find",
+  "find.closeTitle": "Close (Esc)",
+  // Pages
+  "page.error": "This page could not be displayed.",
+  "page.goTo": "Go to page {n}",
+  // Print
+  "print.title": "Print",
+  "print.pages": "Pages",
+  "print.all": "All ({n})",
+  "print.current": "Current page ({n})",
+  "print.range": "Pages",
+  "print.rangeHint": "for example 1-5, 8",
+  "print.badRange": "Type page numbers between 1 and {n}, for example 1-5, 8.",
+  "print.quality": "Quality",
+  "print.standard": "Standard (150 dpi)",
+  "print.high": "High (300 dpi)",
+  "print.next": "Print…",
+  "print.preparing": "Preparing page {done} of {total}…",
+  "print.failed": "Printing failed: {error}",
+  "print.note": "The pages are prepared first, then the system print dialog opens to choose the printer.",
+  // Settings
+  "set.title": "Settings",
+  "set.theme": "Theme",
+  "set.system": "Same as Windows",
+  "set.light": "Light",
+  "set.dark": "Dark",
+  "set.language": "Language",
+  "set.updates": "Check for updates when edits starts",
+  "set.checkNow": "Check now",
+  "set.checking": "Checking…",
+  "set.upToDate": "edits {version} is the latest version.",
+  "set.version": "Version {version}",
+  "set.about": "edits is free software under the Apache 2.0 licence. PDF engine: PDFium.",
+  "set.licenses": "Third-party software",
+  // Updates
+  "up.available": "edits {version} is available.",
+  "up.install": "Install and restart",
+  "up.later": "Later",
+  "up.downloading": "Downloading the update… {pct}%",
+  "up.failed": "The update could not be installed: {error}",
+} as const;
+
+export type Key = keyof typeof en;
+
+const ar: Record<Key, string> = {
+  "app.open": "فتح",
+  "app.openPdf": "افتح ملف PDF",
+  "app.openHint": "أو اضغط Ctrl O، أو أفلت الملفات هنا",
+  "app.openTitle": "افتح ملف PDF (Ctrl O)",
+  "app.recent": "الملفات الأخيرة",
+  "app.recentPage": "الصفحة {page} من {pages}",
+  "app.recentPages": "{pages} صفحة",
+  "app.forget": "إزالة {name} من الملفات الأخيرة",
+  "app.forgetTitle": "إزالة من هذه القائمة",
+  "app.dismiss": "إغلاق",
+  "app.documents": "المستندات المفتوحة",
+  "app.closeTab": "إغلاق {name}",
+  "app.closeTabTitle": "إغلاق (Ctrl W)",
+  "bar.panel": "اللوحة",
+  "bar.panelTitle": "الصفحات والإشارات المرجعية (F4)",
+  "bar.back": "رجوع",
+  "bar.backTitle": "رجوع (Alt ←)",
+  "bar.forward": "تقدم",
+  "bar.forwardTitle": "تقدم (Alt →)",
+  "bar.pageNumber": "رقم الصفحة",
+  "bar.goTo": "الانتقال إلى صفحة (Ctrl G)",
+  "bar.zoomOut": "تصغير",
+  "bar.zoomOutTitle": "تصغير (Ctrl -)",
+  "bar.zoomIn": "تكبير",
+  "bar.zoomInTitle": "تكبير (Ctrl +)",
+  "bar.fitWidth": "ملء العرض",
+  "bar.fitWidthTitle": "ملء العرض، يتبع حجم النافذة (Ctrl 0)",
+  "bar.fitPage": "الصفحة كاملة",
+  "bar.fitPageTitle": "الصفحة كاملة، يتبع حجم النافذة (Ctrl 2)",
+  "bar.view": "العرض",
+  "bar.layout": "تخطيط الصفحات",
+  "bar.continuous": "متصل",
+  "bar.single": "صفحة واحدة",
+  "bar.twoPage": "صفحتان",
+  "bar.rtl": "من اليمين",
+  "bar.rtlTitle": "من اليمين إلى اليسار: الصفحة الأولى من كل صفحتين على اليمين، كما في الكتب العربية",
+  "bar.rotateLeft": "تدوير لليسار",
+  "bar.rotateLeftTitle": "تدوير العرض لليسار (Ctrl Shift -)",
+  "bar.rotateRight": "تدوير لليمين",
+  "bar.rotateRightTitle": "تدوير العرض لليمين (Ctrl Shift +)",
+  "bar.print": "طباعة",
+  "bar.printTitle": "طباعة (Ctrl P)",
+  "bar.settings": "الإعدادات",
+  "bar.settingsTitle": "الإعدادات (Ctrl ,)",
+  "pw.protected": "الملف {name} محمي بكلمة مرور.",
+  "pw.password": "كلمة المرور",
+  "pw.wrong": "كلمة المرور غير صحيحة. حاول مرة أخرى.",
+  "pw.open": "فتح",
+  "common.cancel": "إلغاء",
+  "common.close": "إغلاق",
+  "side.label": "اللوحة الجانبية",
+  "side.pages": "الصفحات",
+  "side.bookmarks": "الإشارات المرجعية",
+  "side.page": "الصفحة {n}",
+  "side.loading": "جارٍ التحميل…",
+  "side.noBookmarks": "لا توجد إشارات مرجعية في هذا المستند.",
+  "side.collapse": "طي",
+  "side.expand": "توسيع",
+  "find.placeholder": "البحث في المستند",
+  "find.of": "{n} من {total}",
+  "find.searching": "جارٍ البحث… {done} من {total} صفحة",
+  "find.none": "لا توجد نتائج",
+  "find.prev": "النتيجة السابقة",
+  "find.prevTitle": "السابق (Shift Enter، Shift F3)",
+  "find.next": "النتيجة التالية",
+  "find.nextTitle": "التالي (Enter، F3)",
+  "find.case": "مطابقة حالة الأحرف",
+  "find.word": "كلمة",
+  "find.wordTitle": "كلمات كاملة فقط",
+  "find.diacritics": "تجاهل التشكيل والتطويل",
+  "find.variants": "اعتبار أشكال الحروف متساوية: أ إ آ = ا، ى = ي، ة = ه، ١٢٣ = 123",
+  "find.close": "إغلاق البحث",
+  "find.closeTitle": "إغلاق (Esc)",
+  "page.error": "تعذر عرض هذه الصفحة.",
+  "page.goTo": "الانتقال إلى الصفحة {n}",
+  "print.title": "طباعة",
+  "print.pages": "الصفحات",
+  "print.all": "الكل ({n})",
+  "print.current": "الصفحة الحالية ({n})",
+  "print.range": "صفحات",
+  "print.rangeHint": "مثلًا 1-5، 8",
+  "print.badRange": "اكتب أرقام صفحات بين 1 و{n}، مثلًا 1-5، 8.",
+  "print.quality": "الجودة",
+  "print.standard": "عادية (150 نقطة/بوصة)",
+  "print.high": "عالية (300 نقطة/بوصة)",
+  "print.next": "طباعة…",
+  "print.preparing": "جارٍ تجهيز الصفحة {done} من {total}…",
+  "print.failed": "تعذرت الطباعة: {error}",
+  "print.note": "تُجهَّز الصفحات أولًا، ثم تُفتح نافذة الطباعة في النظام لاختيار الطابعة.",
+  "set.title": "الإعدادات",
+  "set.theme": "المظهر",
+  "set.system": "مثل Windows",
+  "set.light": "فاتح",
+  "set.dark": "داكن",
+  "set.language": "اللغة",
+  "set.updates": "البحث عن تحديثات عند بدء edits",
+  "set.checkNow": "ابحث الآن",
+  "set.checking": "جارٍ البحث…",
+  "set.upToDate": "الإصدار {version} من edits هو الأحدث.",
+  "set.version": "الإصدار {version}",
+  "set.about": "edits برنامج حر بترخيص Apache 2.0، ومحرك PDF فيه هو PDFium.",
+  "set.licenses": "البرامج الخارجية المستخدمة",
+  "up.available": "الإصدار {version} من edits متاح.",
+  "up.install": "التثبيت وإعادة التشغيل",
+  "up.later": "لاحقًا",
+  "up.downloading": "جارٍ تنزيل التحديث… {pct}٪",
+  "up.failed": "تعذر تثبيت التحديث: {error}",
+};
+
+const tables: Record<Lang, Record<Key, string>> = { en, ar };
+
+let current: Lang = $state("en");
+
+/** The language `setting` stands for on this machine. */
+export function resolveLang(setting: LangSetting): Lang {
+  if (setting !== "system") return setting;
+  return navigator.language.toLowerCase().startsWith("ar") ? "ar" : "en";
+}
+
+/** Switches the interface language and direction. */
+export function setLang(lang: Lang) {
+  current = lang;
+  const root = document.documentElement;
+  root.lang = lang;
+  root.dir = lang === "ar" ? "rtl" : "ltr";
+}
+
+export function lang(): Lang {
+  return current;
+}
+
+/** Interface text for `key`, with `{name}` placeholders filled from `params`. */
+export function t(key: Key, params: Record<string, string | number> = {}): string {
+  const s = tables[current][key] ?? en[key];
+  return s.replace(/\{(\w+)\}/g, (m, k: string) => (k in params ? String(params[k]) : m));
+}
+
+/** Every key has an Arabic text, checked by `npm run check` through the type above. */
+export const languages: { id: Lang; name: string }[] = [
+  { id: "en", name: "English" },
+  { id: "ar", name: "العربية" },
+];

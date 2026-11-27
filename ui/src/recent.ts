@@ -2,6 +2,8 @@
 // folder through the Rust side (state.json).
 
 import { loadState, saveState, type SearchOptions } from "./api";
+import type { LangSetting } from "./i18n.svelte";
+import type { Theme } from "./look";
 import type { ViewState } from "./viewer";
 
 export interface RecentEntry extends Partial<ViewState> {
@@ -16,6 +18,10 @@ export interface Settings {
   sidebarOpen: boolean;
   sidebarPanel: "pages" | "bookmarks";
   searchOptions: SearchOptions;
+  theme: Theme;
+  language: LangSetting;
+  checkUpdates: boolean;
+  printDpi: number;
 }
 
 interface Saved {
@@ -34,6 +40,10 @@ let saved: Saved = {
     sidebarOpen: false,
     sidebarPanel: "pages",
     searchOptions: { match_case: false, whole_word: false, ignore_diacritics: true, letter_variants: true },
+    theme: "system",
+    language: "system",
+    checkUpdates: true,
+    printDpi: 150,
   },
 };
 let timer = 0;

@@ -1,6 +1,6 @@
 # edits: Product Requirements
 
-Status: draft 2, 2026-11-26. M0 spike done; rendering decision recorded in 8.2.
+Status: draft 3, 2026-11-27. M0 spike done; rendering decision recorded in 8.2. Cold start and memory targets decided (section 7, open questions 5 and 6).
 Plan and progress: [milestones.md](milestones.md).
 
 ## 1. Summary
@@ -121,14 +121,14 @@ Measured on a mid-range laptop (4 cores, 8 GB RAM, SSD), release build. A benchm
 
 | Measure | Target |
 |---|---|
-| Cold start to usable window (no file) | ≤ 400 ms |
+| Cold start to usable window (no file) | ≤ 500 ms *(was 400; WebView2 start-up alone is about 400 ms)* |
 | Double-click a 10 MB PDF to first page shown | ≤ 600 ms |
 | Open a 1,000-page, 500 MB PDF to first page shown | ≤ 1 s, without loading the whole file |
 | Scrolling | 60 fps; a page never shows blank (low-resolution preview first, sharp within 100 ms) |
 | Zoom step to sharp page | ≤ 100 ms |
 | Search a 500-page text PDF, first result | ≤ 200 ms; all results ≤ 2 s |
 | Save after adding annotations | ≤ 200 ms (incremental save) |
-| Memory, one 100-page document open | ≤ 200 MB |
+| Memory, one document open | ≤ 200 MB above the app with no document open *(all processes, WebView2 included; that baseline is about 160 MB)* |
 | OCR one A4 page at 300 DPI | ≤ 1.5 s on 4 cores (same as arabic-ocr today), never blocking the interface |
 | Installer size | ≤ 60 MB, including OCR models |
 
@@ -150,7 +150,7 @@ The stack below is the plan. M0 is a spike that confirms or changes the items ma
 - Pages are rendered as tiles at the current zoom. Only visible tiles and a small margin are rendered. Requests have priorities and are cancelled when the user scrolls past.
 - Two-level cache: low-resolution page previews (kept for the whole document) and sharp tiles (bounded by memory).
 - Files are memory-mapped and pages are loaded on demand, so file size does not affect open time.
-- PDFium allows only one thread at a time. Plan: one dedicated render thread with a priority queue; if the M0 measurements need more, several render worker processes in parallel.
+- PDFium allows only one thread at a time. One dedicated render thread with a priority queue does all PDFium work in the app's process. Pages that are slow to draw (a render over 40 ms) go to render worker processes, up to three, in parallel (M1.4). A worker that crashes or hangs on a page loses only that page; a render that is no longer wanted is stopped by ending its worker.
 - Text and search indexes are built in the background after the first page is shown.
 
 **Main risk:** moving page bitmaps from Rust into the WebView. The plan was a custom URL protocol that streams tiles to `<img>`/canvas elements, with a native GPU surface (wgpu) for the page area as the fallback.
@@ -239,5 +239,5 @@ edits is fully open source. Decided 2026-11-15.
 2. Should the document writer (M9) be part of v1.0, or the first release after it? It is the one item that could be moved to ship sooner.
 3. Is a paid code-signing certificate acceptable for the v1.0 release?
 4. Is Apache-2.0 the right license (section 10.1), or is another open-source license preferred?
-5. Cold start target (section 7): WebView2 start-up alone takes about 400 ms on the development machine, so ≤ 400 ms is not reachable as measured. Relax it, or keep looking for ways around it? (M0 result: 470–480 ms.)
-6. Memory target (section 7): WebView2 uses 160 MB before a document is open. Should the target count WebView2's processes? (M0 result: 350–380 MB in total with a document open.)
+5. ~~Cold start target~~ **Decided 2026-11-27:** ≤ 500 ms. WebView2 start-up alone takes about 400 ms, so 400 ms was not reachable as measured.
+6. ~~Memory target~~ **Decided 2026-11-27:** counted for all processes, WebView2 included, as growth over the app with no document open: ≤ 200 MB above that baseline (about 160 MB).

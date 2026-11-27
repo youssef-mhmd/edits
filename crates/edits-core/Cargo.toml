@@ -10,10 +10,18 @@ rust-version.workspace = true
 pdfium-render.workspace = true
 thiserror.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 log.workspace = true
 sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 unicode-normalization = "0.1.26"
 unicode-bidi = "0.3.18"
+
+# Serves as a render worker for the engine tests; the app and edits-bench
+# use their own executables.
+[[bin]]
+name = "edits-render-worker"
+path = "src/bin/render_worker.rs"
+test = false
 
 [lints]
 workspace = true

@@ -1,12 +1,61 @@
 :root {
+  font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  font-size: 13px;
+}
+
+/* Dark theme (the default) and light theme; html[data-theme] is set from
+   the settings before the first frame (main.ts). */
+:root,
+:root[data-theme="dark"] {
   --bg: #2b2b2e;
   --bar: #1e1e21;
+  --tabbar: #151517;
+  --tab-hover: #222226;
   --text: #e6e6e6;
   --muted: #9a9aa0;
   --accent: #4a90d9;
+  --primary-hover: #5b9de0;
+  --control: #333338;
+  --control-hover: #3d3d44;
+  --border: #444;
+  --edge: #000;
+  --selected: #2d3f55;
+  --overlay: rgb(0 0 0 / 0.4);
+  --popup-shadow: rgb(0 0 0 / 0.5);
+  --page-shadow: rgb(0 0 0 / 0.5);
+  --error: #ff8a80;
+  --toast-bg: #3a1f1d;
+  --toast-border: #7a2e27;
+  --toast-text: #ffd2cc;
+  --note-bg: #1f2e40;
+  --note-border: #35577d;
   color-scheme: dark;
-  font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
-  font-size: 13px;
+}
+
+:root[data-theme="light"] {
+  --bg: #e4e4e9;
+  --bar: #f7f7f9;
+  --tabbar: #dadae0;
+  --tab-hover: #e8e8ed;
+  --text: #1d1d22;
+  --muted: #5f5f68;
+  --accent: #2f6fbd;
+  --primary-hover: #3d7fd0;
+  --control: #fff;
+  --control-hover: #ececf1;
+  --border: #c2c2ca;
+  --edge: #cdcdd4;
+  --selected: #d3e3f7;
+  --overlay: rgb(0 0 0 / 0.25);
+  --popup-shadow: rgb(0 0 0 / 0.18);
+  --page-shadow: rgb(0 0 0 / 0.22);
+  --error: #b3261e;
+  --toast-bg: #fdecea;
+  --toast-border: #e6a29c;
+  --toast-text: #7a1c14;
+  --note-bg: #e3eefb;
+  --note-border: #9fc1e8;
+  color-scheme: light;
 }
 
 * {
@@ -23,7 +72,10 @@ body,
   color: var(--text);
 }
 
+/* The page view keeps left-to-right geometry in the Arabic interface:
+   scroll positions and page placement are computed for it. */
 .scroller {
+  direction: ltr;
   position: absolute;
   inset: 0;
   overflow: auto;
@@ -38,7 +90,7 @@ body,
 .page {
   position: absolute;
   background: #fff;
-  box-shadow: 0 1px 4px rgb(0 0 0 / 0.5);
+  box-shadow: 0 1px 4px var(--page-shadow);
   overflow: hidden;
   contain: strict;
 }
@@ -105,4 +157,50 @@ body,
   text-align: center;
   font-size: 13px;
   gap: 4px;
+}
+
+/* Printing (print.ts): only the prepared page images are printed, each
+   scaled to fit one sheet. */
+#print-root {
+  display: none;
+}
+
+@media print {
+  @page {
+    margin: 0;
+  }
+
+  html,
+  body {
+    height: auto;
+    overflow: visible;
+    background: #fff;
+  }
+
+  #app {
+    display: none;
+  }
+
+  #print-root {
+    display: block;
+  }
+
+  #print-root > div {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100vw;
+    height: 100vh;
+    break-after: page;
+    overflow: hidden;
+  }
+
+  #print-root > div:last-child {
+    break-after: auto;
+  }
+
+  #print-root img {
+    max-width: 100%;
+    max-height: 100%;
+  }
 }

@@ -24,6 +24,7 @@ Benchmarks need a release build. `edits.exe --bench-out OUT.json [FILE]` runs th
 
 ## Architecture notes
 
+- Render workers (`edits-core/src/worker.rs`): a page whose render takes over 40 ms is "heavy"; its later renders go to up to three worker processes (the app's own exe with `--edits-render-worker`, so `main` must call `worker::serve_if_requested()` first). Cancelling a worker render that has run 30 ms ends the worker; a 20 s watchdog does the same. Workers exit after 30 s idle and when the app's pipe closes. `EDITS_WORKERS=0` turns them off. Tile `render_us` excludes page load time; the viewer gives pages with 512 px tiles slower than 40 ms 1024 px tiles.
 - Tiles: 512 device px, raw RGBA. Default transport on Windows is WebView2 shared buffers (`src-tauri/src/shm.rs`); the `tile` URL scheme and binary IPC remain for comparison (`EDITS_TRANSPORT=protocol|ipc`). See docs/m0-results.md.
 - The viewer (`ui/src/viewer.ts`) is plain DOM, not Svelte: per-page preview canvas plus tile canvases placed in percent of page size. Svelte is only the shell.
 - `unsafe` is denied workspace-wide; `shm.rs` (WebView2 COM) is the one allowed exception.
@@ -34,6 +35,9 @@ Benchmarks need a release build. `edits.exe --bench-out OUT.json [FILE]` runs th
 - Text (`edits-core/src/text.rs`, `reading.rs`): PDFium's character order is not reading order for Arabic, so text is rebuilt from glyph positions (marks clustered with their letter, lines by baseline, visual sort, then bidi). Run `edits-bench text-check` after touching it, and add a golden file to `tests/text` for each document fixed. Search normalisation and match mapping are in `text.rs`, with unit tests.
 - Unicode escapes written into files by tools or scripts can turn into the characters themselves (an invisible U+FEFF broke lint once); build them in code and check with `od -c`.
 - Window close: the front end's close handler saves positions, then Tauri's JS calls `destroy()`, which needs `core:window:allow-destroy` in the capability. The handler must never throw or wait long. Run `tests/close.ps1` after touching start-up, shutdown, capabilities or background threads.
+- Interface text is in `ui/src/i18n.svelte.ts` (English and Arabic, every key in both; `t()` is reactive). Arabic sets `dir="rtl"` on `<html>`; the page view (`.scroller`) stays `direction: ltr`. Never name a loop variable `t` in Svelte markup. Colours are CSS variables in `app.css` (`data-theme` light/dark); never hard-code colours in components. Theme and language are copied to localStorage so `main.ts` applies them before the first frame (`look.ts`).
+- Print (`ui/src/print.ts`): pages are rendered at 150 or 300 dpi into PNG images in `#print-root` and printed with `window.print()`; `app.css` hides everything else in print.
+- Updates: `tauri-plugin-updater` against `latest.json` on GitHub releases; JS plugin versions must match the Rust crates' minor version (Rust 1.88 holds those back). Update checks never run in bench mode.
 - Bookmarks and links come from `edits-core/src/nav.rs` as page fractions (top-left origin, page /Rotate applied); the viewer applies view rotation.
 - When editing files from scripts on Windows, write with `newline=''` (Python) or the file gains CRLF line endings.
 
