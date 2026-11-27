@@ -96,7 +96,7 @@ Notes: results and what was tried in [m1-results.md](m1-results.md). Still faili
 - [x] Print *(Ctrl P: all, current page or a range, 150 or 300 dpi, then the WebView2 print dialog)*
 - [x] Light and dark theme; settings *(theme follows Windows by default; Ctrl ,)*
 - [x] English and Arabic interface with mirrored layout *(page view keeps left-to-right geometry)*
-- [ ] Windows installer and auto-update *(signed NSIS installer, 6.1 MB, English and Arabic; updater wired and release workflow written. Not tested end to end: needs the GitHub repository, the real endpoint in tauri.conf.json and a published release)*
+- [ ] Windows installer and auto-update *(signed NSIS installer, 6.1 MB, English and Arabic; updater wired and release workflow written. Not tested end to end until a release is published on github.com/youssef-mhmd/edits)*
 - [ ] Release 0.1 *(release notes in [release-notes.md](release-notes.md); version 0.1.0; not published)*
 
 ## M2: Annotate and mark up (release 0.2)
