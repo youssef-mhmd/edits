@@ -194,9 +194,10 @@ pub fn pdf_all(dir: &Path) -> Res<bool> {
     for path in pdf_files(dir)? {
         let name = path.strip_prefix(dir).unwrap_or(&path).display().to_string();
         let t = Instant::now();
+        let pw = password_for(&path).unwrap_or_default();
         let ours = FileSource::open(&path)
             .map_err(|e| e.to_string())
-            .and_then(|s| PdfFile::open(s).map_err(|e| e.to_string()));
+            .and_then(|s| PdfFile::open_with_password(s, pw.as_bytes()).map_err(|e| e.to_string()));
         let theirs = engine.open(&path, password_for(&path));
         match (ours, theirs) {
             (Err(e), Err(_)) => println!("BOTH-REFUSE {name}: {e}"),
@@ -225,15 +226,17 @@ pub fn pdf_all(dir: &Path) -> Res<bool> {
                 }
                 engine.close(info.doc);
                 let mut status = if pages == info.page_count { "OK" } else { "PAGES-DIFFER" };
-                // Round trip: rewrite page 1 unchanged as an update; PDFium must read it.
-                if f.is_encrypted() {
-                    status = if status == "OK" { "OK-ENCRYPTED" } else { status };
-                } else if pages > 0 {
+                // Round trip: rewrite page 1 unchanged as an update (protected
+                // files with their protection); PDFium must read it.
+                if f.is_encrypted() && status == "OK" {
+                    status = "OK-ENCRYPTED";
+                }
+                if pages > 0 {
                     let (r, d, _) = f.page_annots(0).map_err(|e| e.to_string())?;
                     let tail = write::update(&f, &[(r, Obj::Dict(d))]);
                     std::fs::copy(&path, &tmp)?;
                     std::fs::OpenOptions::new().append(true).open(&tmp)?.write_all(&tail)?;
-                    match engine.open(&tmp, None) {
+                    match engine.open(&tmp, password_for(&path)) {
                         Ok(i2) => {
                             if i2.page_count != info.page_count {
                                 status = "UPDATE-PAGES-DIFFER";
@@ -373,6 +376,9 @@ pub fn pages_all(dir: &Path) -> Res<bool> {
             let ex = steps(&mut s2, n)?;
             s2.save(&out).map_err(|e| e.to_string())?;
             let ms = t2.elapsed().as_secs_f64() * 1000.0;
+            if let Some(keep) = std::env::var_os("EDITS_KEEP_SAVED") {
+                let _ = std::fs::copy(&out, keep);
+            }
             let got = engine.open(&out, None).map_err(|e| e.to_string())?;
             let r = verify(&ex, &got);
             engine.close(got.doc);

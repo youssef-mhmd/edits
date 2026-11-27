@@ -528,3 +528,18 @@ pub fn fields(path: &Path) -> Res<bool> {
     }
     Ok(true)
 }
+
+/// Prints object `num` of a file as edits' reader sees it (decrypted).
+pub fn object(path: &Path, num: u32) -> Res<bool> {
+    use edits_edit::pdf::{FileSource, Obj, PdfFile};
+    let pw = crate::check::password_for(path).unwrap_or_default();
+    let f = PdfFile::open_with_password(FileSource::open(path)?, pw.as_bytes())?;
+    match f.get((num, 0))? {
+        Obj::Stream(d, data) => {
+            let decoded = edits_edit::pdf::file::decode(&d, &data).map(|v| v.len());
+            println!("stream {d:?}: {} bytes stored, decoded {decoded:?}", data.len());
+        }
+        o => println!("{o:?}"),
+    }
+    Ok(true)
+}

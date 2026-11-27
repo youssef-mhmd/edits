@@ -172,6 +172,12 @@ impl Crypt {
         self.walk(r, o, true)
     }
 
+    /// Like `encrypt`, for a file written anew, where object numbers change
+    /// and the caller leaves the encryption dictionary itself alone.
+    pub fn encrypt_renumbered(&self, r: Ref, o: Obj) -> Obj {
+        self.walk(r, o, true)
+    }
+
     fn walk(&self, r: Ref, o: Obj, enc: bool) -> Obj {
         let f = |m, data: &[u8]| if enc { self.encrypt_with(m, r, data) } else { self.decrypt_with(m, r, data) };
         match o {

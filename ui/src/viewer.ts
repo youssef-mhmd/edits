@@ -216,8 +216,8 @@ interface PageView {
   marks: HTMLDivElement;
   /** Annotation selection and drawing, in unrotated page space (turned with CSS). */
   alayer: HTMLDivElement;
-  /** Form fields to fill, placed like `alayer`. */
-  flayer: HTMLDivElement;
+  /** Form fields to fill, placed like `alayer`; only on pages with fields. */
+  flayer: HTMLDivElement | null;
 }
 
 /** A caret: page index and position between characters of its text. */
@@ -971,9 +971,6 @@ export class Viewer {
         const alayer = document.createElement("div");
         alayer.className = "alayer";
         el.append(alayer);
-        const flayer = document.createElement("div");
-        flayer.className = "flayer";
-        el.append(flayer);
         const v: PageView = {
           el,
           preview: null,
@@ -983,7 +980,7 @@ export class Viewer {
           links: [],
           marks,
           alayer,
-          flayer,
+          flayer: null,
         };
         this.views.set(i, v);
         this.place(i, v);
@@ -1692,6 +1689,7 @@ export class Viewer {
     const h = b.ph / this.dpr;
     const odd = this._rotation % 2 === 1;
     for (const layer of [v.alayer, v.flayer]) {
+      if (!layer) continue;
       const st = layer.style;
       st.width = `${odd ? h : w}px`;
       st.height = `${odd ? w : h}px`;
@@ -1722,7 +1720,7 @@ export class Viewer {
     const f = list[((k % list.length) + list.length) % list.length];
     const page = f.boxes[0].page;
     const fid = f.id.join(" ");
-    const here = this.views.get(page)?.flayer.querySelector<HTMLElement>(`[data-fid="${fid}"]`);
+    const here = this.views.get(page)?.flayer?.querySelector<HTMLElement>(`[data-fid="${fid}"]`);
     if (here && this.pagesInView(0).includes(page)) {
       here.focus();
       return;
@@ -1746,21 +1744,37 @@ export class Viewer {
     if (!this.formFields) {
       if (!this.fieldsAsked) {
         this.fieldsAsked = true;
-        void this.editor
-          .fields()
-          .then((f) => {
-            this.formFields = f;
-            for (const k of this.views.keys()) this.drawFields(k);
-            this.onUpdate();
-          })
-          .catch(() => (this.formFields = []));
+        // After the first pages are drawn: rendering comes first.
+        const editor = this.editor;
+        setTimeout(() => {
+          void editor
+            .fields()
+            .then((f) => {
+              this.formFields = f;
+              if (!f.length) return;
+              for (const k of this.views.keys()) this.drawFields(k);
+              this.onUpdate();
+            })
+            .catch(() => (this.formFields = []));
+        }, 400);
       }
       return;
     }
+    // Documents without a form: nothing to draw, ever.
+    if (!this.formFields.length) return;
+    const fillableHere = this.formFields.some((f) => this.fillable(f) && f.boxes.some((b) => b.page === i));
+    if (!fillableHere) return;
+    if (!v.flayer) {
+      v.flayer = document.createElement("div");
+      v.flayer.className = "flayer";
+      v.el.append(v.flayer);
+      this.orientLayer(i, v);
+    }
+    const flayer = v.flayer;
     // Keep a control being typed into.
     const active = document.activeElement as HTMLElement | null;
-    if (active && v.flayer.contains(active)) return;
-    v.flayer.replaceChildren();
+    if (active && flayer.contains(active)) return;
+    flayer.replaceChildren();
     const b = this.boxes.get(i);
     const size = this.info.pages[i];
     if (!b || !size) return;
@@ -1795,7 +1809,7 @@ export class Viewer {
             this.focusField(order + (e.shiftKey ? -1 : 1));
           }
         });
-        v.flayer.append(el);
+        flayer.append(el);
         if (this.pendingFocus === el.dataset.fid && n === f.boxes.findIndex((x) => x.page === i)) {
           this.pendingFocus = null;
           el.focus({ preventScroll: true });

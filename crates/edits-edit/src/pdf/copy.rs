@@ -171,7 +171,7 @@ pub fn rewrite<S: Source>(f: &PdfFile<S>, out: &mut dyn Write) -> Result<u64, Pd
         });
         let o = if dead { Obj::Null } else { renumber(&got, &mut |r| number(r, &mut work, &mut map)) };
         let o = match &f.crypt {
-            Some(c) if Some(n) != enc_obj => c.encrypt((n, 0), o),
+            Some(c) if Some(n) != enc_obj => c.encrypt_renumbered((n, 0), o),
             _ => o,
         };
         debug_assert_eq!(n as usize, offsets.len());
