@@ -261,6 +261,10 @@ pub fn run() {
             pages::merge_files,
             forms::form_fields,
             forms::field_set,
+            edit::flatten_doc,
+            state::load_signatures,
+            state::save_signatures,
+            state::picture_data_url,
         ])
         .setup(move |app| {
             *setup_ms_hook.lock().unwrap_or_else(|e| e.into_inner()) = unix_ms();

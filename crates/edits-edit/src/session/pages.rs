@@ -236,7 +236,7 @@ impl Session {
 
     /// True if the pages differ from the base file's.
     pub fn pages_changed(&self) -> bool {
-        !is_identity(self.order(), self.base_pages)
+        self.flattened || !is_identity(self.order(), self.base_pages)
     }
 
     fn set_order(&mut self, new: Vec<PageSlot>) -> Result<(), EditError> {
@@ -486,7 +486,7 @@ impl Session {
     /// `export`: a new file of these pages only, without bookmarks.
     pub(super) fn objects_for(&self, order: &[PageSlot], export: bool) -> Result<Planned, PdfError> {
         let base_pages = self.base.pages()?;
-        let structural = export || !is_identity(order, base_pages.len() as u32);
+        let structural = export || self.flattened || !is_identity(order, base_pages.len() as u32);
         // Pages (keys) whose annotations change.
         let mut touched: BTreeSet<u32> =
             self.entries.values().filter(|e| e.changed()).map(|e| e.annot().page).collect();
@@ -561,6 +561,7 @@ impl Session {
                             || s.turn != 0
                             || s.crop.is_some()
                             || !s.decor.is_empty()
+                            || self.flattened
                             || touched.contains(&s.key);
                         let dict = if write { page_dict(&self.base, r)? } else { raw };
                         (r, dict, list, write)
@@ -720,6 +721,7 @@ impl Session {
 
         // The catalog, when something changes it.
         let mut cat: Option<Dict> = None;
+        let page_list: Vec<Ref> = kids.iter().filter_map(Obj::as_ref).collect();
         if structural && let Some(root) = root_ref {
             let mut d = self.base.get(root)?.as_dict().cloned().unwrap_or_default();
             d.set(b"Type", Obj::name("Pages"));
@@ -745,6 +747,13 @@ impl Session {
             }
         }
         self.field_objects(&mut out, &mut cat, catalog.as_dict())?;
+        if self.flattened {
+            self.flatten_pages(&mut out, &page_list)?;
+            // No fields are left to fill.
+            if catalog.as_dict().is_some_and(|c| c.get(b"AcroForm").is_some()) {
+                cat.get_or_insert_with(|| catalog.as_dict().cloned().unwrap_or_default()).remove(b"AcroForm");
+            }
+        }
         if let (Some(cr), Some(c)) = (catalog_ref, cat) {
             out.objects.push((cr, Obj::Dict(c)));
         }

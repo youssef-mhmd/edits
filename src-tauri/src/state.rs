@@ -66,3 +66,45 @@ pub fn save_state(app: tauri::AppHandle, state: serde_json::Value) -> Result<(),
     std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
 }
+
+/// Saved signatures (pictures as data URLs), kept on this computer only.
+#[tauri::command]
+pub fn load_signatures(app: tauri::AppHandle) -> serde_json::Value {
+    data_dir(&app)
+        .ok()
+        .and_then(|d| std::fs::read(d.join("signatures.json")).ok())
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or(serde_json::Value::Array(Vec::new()))
+}
+
+#[tauri::command]
+pub fn save_signatures(app: tauri::AppHandle, list: serde_json::Value) -> Result<(), String> {
+    let text = serde_json::to_vec(&list).map_err(|e| e.to_string())?;
+    if text.len() > 20 * MAX_STATE_BYTES {
+        return Err("too many signatures".into());
+    }
+    let dir = data_dir(&app)?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join("signatures.json");
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+}
+
+/// A JPEG or PNG file as a data URL, for making a signature from a picture.
+#[tauri::command]
+pub fn picture_data_url(path: String) -> Result<String, String> {
+    let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    if meta.len() > 20 << 20 {
+        return Err("the picture is too large (over 20 MB)".into());
+    }
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    let mime = if bytes.starts_with(&[0xFF, 0xD8]) {
+        "image/jpeg"
+    } else if bytes.starts_with(b"\x89PNG") {
+        "image/png"
+    } else {
+        return Err("only JPEG and PNG pictures can be used".into());
+    };
+    Ok(format!("data:{mime};base64,{}", edits_edit::image::encode_base64(&bytes)))
+}

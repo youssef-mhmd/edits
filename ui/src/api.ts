@@ -287,6 +287,11 @@ export interface FormField {
   boxes: { page: number; rect: number[]; on: string | null }[];
 }
 
+export const flattenDoc = (doc: number) => invoke<Changed>("flatten_doc", { doc });
+/** Saved signatures: PNG data URLs. */
+export const loadSignatures = () => invoke<string[]>("load_signatures");
+export const saveSignatures = (list: string[]) => invoke<void>("save_signatures", { list });
+export const pictureDataUrl = (path: string) => invoke<string>("picture_data_url", { path });
 export const formFields = (doc: number) => invoke<FormField[]>("form_fields", { doc });
 export const fieldSet = (doc: number, id: [number, number], value: FieldValue) =>
   invoke<Changed>("field_set", { doc, id, value });
@@ -389,6 +394,8 @@ export interface NewAnnot {
   font_size?: number;
   label?: string;
   image_path?: string;
+  /** Or the picture itself as a data URL (signatures). */
+  image_data?: string;
 }
 
 export interface AnnotStyle {

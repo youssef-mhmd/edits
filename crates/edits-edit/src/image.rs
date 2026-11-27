@@ -123,6 +123,15 @@ fn png_image(b: &[u8]) -> Result<PdfImage, String> {
     })
 }
 
+/// Bytes from base64 text (pictures sent by the interface as data URLs).
+pub fn decode_base64(s: &str) -> Option<Vec<u8>> {
+    b64::decode(s.trim())
+}
+
+pub fn encode_base64(d: &[u8]) -> String {
+    b64::encode(d)
+}
+
 /// Bytes as base64 text in JSON (crash-recovery files).
 mod b64 {
     use serde::{Deserialize, Deserializer, Serializer};

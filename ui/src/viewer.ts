@@ -57,10 +57,22 @@ export type ViewMode = "continuous" | "single" | "two-page";
 
 /** What a mouse press on a page does: select text and annotations, or draw. */
 export type Tool =
-  "select" | "ink" | "line" | "arrow" | "square" | "circle" | "note" | "text" | "stamp" | "image";
+  | "select"
+  | "ink"
+  | "line"
+  | "arrow"
+  | "square"
+  | "circle"
+  | "note"
+  | "text"
+  | "stamp"
+  | "image"
+  | "tick"
+  | "cross"
+  | "sign";
 
 /** Tools that place something where the page is clicked (or a box is dragged). */
-const PLACING: Tool[] = ["note", "text", "stamp", "image"];
+const PLACING: Tool[] = ["note", "text", "stamp", "image", "tick", "cross", "sign"];
 
 /** Carries out annotation edits (the app does the IPC and the redrawing). */
 export interface Editor {
@@ -1923,7 +1935,7 @@ export class Viewer {
         shape("polyline", { points: g.pts.map((p) => p.join(",")).join(" "), fill: "none" });
       else if (g.tool === "line" || g.tool === "arrow")
         shape("line", { x1: String(p0[0]), y1: String(p0[1]), x2: String(p1[0]), y2: String(p1[1]) });
-      else if (g.tool === "square" || g.tool === "text" || g.tool === "image")
+      else if (g.tool === "square" || g.tool === "text" || g.tool === "image" || g.tool === "sign")
         shape("rect", {
           x: String(Math.min(p0[0], p1[0])),
           y: String(Math.min(p0[1], p1[1])),

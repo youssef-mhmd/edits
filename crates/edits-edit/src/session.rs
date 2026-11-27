@@ -18,6 +18,7 @@ use crate::pdf::{Dict, FileSource, Obj, PdfError, PdfFile, Ref, write};
 
 mod decor;
 mod fields;
+mod flatten;
 mod pages;
 pub use decor::Decor;
 pub use fields::{FieldView, WidgetView};
@@ -69,6 +70,10 @@ enum Command {
         obj: Ref,
         from: usize,
         to: usize,
+    },
+    /// Annotations and fields drawn into the pages (or no longer).
+    Flatten {
+        on: bool,
     },
     /// The page list changed (indexes into `Session::orders`).
     Pages {
@@ -136,6 +141,8 @@ pub struct Recovery {
     decors: Vec<Decor>,
     #[serde(default)]
     field_values: Vec<(Ref, fields::FieldEntry)>,
+    #[serde(default)]
+    flattened: bool,
 }
 
 fn stamp_of(path: &Path) -> Option<(u64, u128)> {
@@ -181,6 +188,8 @@ pub struct Session {
     fields: Option<Vec<crate::forms::Field>>,
     /// Values given to fields, with their history.
     field_values: BTreeMap<Ref, fields::FieldEntry>,
+    /// Annotations and form fields are drawn into the pages.
+    flattened: bool,
     layout_changed: bool,
 }
 
@@ -224,6 +233,7 @@ impl Session {
             decors: Vec::new(),
             fields: None,
             field_values: BTreeMap::new(),
+            flattened: false,
             layout_changed: false,
         };
         s.reindex();
@@ -281,6 +291,7 @@ impl Session {
             foreign: self.foreign.iter().map(|f| (f.path.clone(), f.copied.clone())).collect(),
             decors: self.decors.clone(),
             field_values: fields::to_list(&self.field_values),
+            flattened: self.flattened,
         })
     }
 
@@ -302,6 +313,10 @@ impl Session {
         self.next_seq = r.next_seq;
         self.saved_at = r.saved_at;
         self.field_values = fields::from_list(r.field_values);
+        self.flattened = r.flattened;
+        if self.flattened {
+            self.layout_changed = true;
+        }
         if !self.field_values.is_empty() {
             self.base_fields()?;
         }
@@ -362,8 +377,31 @@ impl Session {
         Some(a)
     }
 
+    /// Draws every annotation and form field into its page (undoable until saved).
+    pub fn flatten(&mut self) -> Result<(), EditError> {
+        if self.flattened {
+            return Ok(());
+        }
+        self.flattened = true;
+        self.layout_changed = true;
+        self.push(Command::Flatten { on: true });
+        if let Err(e) = self.rebuild() {
+            self.flattened = false;
+            self.undo.pop();
+            return Err(e.into());
+        }
+        Ok(())
+    }
+
+    pub fn is_flattened(&self) -> bool {
+        self.flattened
+    }
+
     /// The annotations on the page at `page` now (import it first).
     pub fn list(&self, page: u32) -> Vec<Listed> {
+        if self.flattened {
+            return Vec::new();
+        }
         let Some(key) = self.key_of(page) else { return Vec::new() };
         self.entries
             .iter()
@@ -463,6 +501,11 @@ impl Session {
                     .filter(|f| f.obj == obj)
                     .flat_map(|f| f.widgets.iter().map(|w| w.page))
                     .collect()
+            }
+            Command::Flatten { on } => {
+                self.flattened = on != backwards;
+                self.layout_changed = true;
+                Vec::new()
             }
             Command::Pages { from, to } => {
                 self.order_at = if backwards { from } else { to };

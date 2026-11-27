@@ -502,7 +502,35 @@ pub fn forms_all(dir: &Path, keep: Option<&Path>) -> Res<bool> {
                 engine.render(spec, 0).map_err(|e| format!("page {p}: {e}"))?;
             }
             engine.close(info.doc);
-            println!("            saved in {save_ms:.0} ms");
+            // Flattened: no fields left, every page still renders.
+            let flat = out.with_file_name(format!(
+                "{}-flat.pdf",
+                out.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+            ));
+            let mut s3 = Session::open(&out).map_err(|e| e.to_string())?;
+            s3.flatten().map_err(|e| e.to_string())?;
+            s3.save(&flat).map_err(|e| e.to_string())?;
+            let left = Session::open(&flat).map_err(|e| e.to_string())?.fields().map_err(|e| e.to_string())?.len();
+            if left > 0 {
+                return Err(format!("{left} fields left after flattening"));
+            }
+            let info = engine.open(&flat, None).map_err(|e| e.to_string())?;
+            for p in 0..info.page_count {
+                let spec = RenderSpec {
+                    doc: info.doc,
+                    page: p,
+                    page_w: 300,
+                    page_h: 300,
+                    x: 0,
+                    y: 0,
+                    w: 300,
+                    h: 300,
+                    rotation: 0,
+                };
+                engine.render(spec, 0).map_err(|e| format!("flattened page {p}: {e}"))?;
+            }
+            engine.close(info.doc);
+            println!("            saved in {save_ms:.0} ms; flattened");
             Ok(())
         })();
         match saved {

@@ -34,6 +34,9 @@
     pagesUndecorate,
     formFields,
     fieldSet,
+    flattenDoc,
+    loadSignatures,
+    saveSignatures,
     type Changed,
     type Decor,
     type DocInfo,
@@ -58,6 +61,8 @@
   import SplitDialog, { type Part } from "./SplitDialog.svelte";
   import MergeDialog from "./MergeDialog.svelte";
   import HeaderDialog from "./HeaderDialog.svelte";
+  import SignatureDialog from "./SignatureDialog.svelte";
+  import Dialog from "./Dialog.svelte";
   import SearchBar from "./SearchBar.svelte";
   import PrintDialog from "./PrintDialog.svelte";
   import SettingsDialog from "./SettingsDialog.svelte";
@@ -102,6 +107,8 @@
     ["text", "T"],
     ["stamp", "⎔"],
     ["image", "🖼"],
+    ["tick", "✓"],
+    ["cross", "✗"],
   ];
 
   const MARKUP_COLORS: { rgb: number[]; css: string }[] = [
@@ -175,6 +182,12 @@
   // Set while asking whether to save a document before it closes.
   let unsavedPrompt: { tab: Tab; resolve: (r: "save" | "discard" | "cancel") => void } | null = $state(null);
   let settingsOpen = $state(false);
+  // Signatures kept on this computer (PNG data URLs) and the one being placed.
+  let signatures: string[] = $state.raw([]);
+  let signature: string | null = $state(null);
+  let signMenu = $state(false);
+  let signDialog = $state(false);
+  let flattenAsk = $state(false);
   // Organise pages: open dialogs, with the pages they act on.
   let cropFor: number[] | null = $state(null);
   let headerFor: number[] | null = $state(null);
@@ -555,7 +568,46 @@
           author: author_,
         }),
       );
-    else if (tl === "image") {
+    else if (tl === "tick" || tl === "cross") {
+      // A mark 12 points across (or the box dragged), drawn as ink.
+      const v = tabs.find((t) => t.id === tabId)?.viewer;
+      const size = v?.info.pages[page];
+      if (!size) return;
+      let [x0, y0, x1, y1] = rect;
+      if (Math.abs(x1 - x0) < 0.005) {
+        const [hw, hh] = [6 / size.w, 6 / size.h];
+        [x0, y0, x1, y1] = [x0 - hw, y0 - hh, x0 + hw, y0 + hh];
+      }
+      const [l, r] = [Math.min(x0, x1), Math.max(x0, x1)];
+      const [tp, b] = [Math.min(y0, y1), Math.max(y0, y1)];
+      const at = (fx: number, fy: number) => [l + (r - l) * fx, tp + (b - tp) * fy];
+      const ink =
+        tl === "tick"
+          ? [[at(0.05, 0.55), at(0.38, 0.9), at(0.95, 0.1)]]
+          : [
+              [at(0.1, 0.1), at(0.9, 0.9)],
+              [at(0.9, 0.1), at(0.1, 0.9)],
+            ];
+      await runEdit(tabId, (doc) =>
+        annotAdd(doc, {
+          page,
+          kind: "ink",
+          ink,
+          width: Math.max(1, ((r - l) * size.w) / 8),
+          color: [0, 0, 0],
+          author: author_,
+        }),
+      );
+    } else if (tl === "sign") {
+      const png = signature;
+      if (!png) {
+        signDialog = true;
+        return;
+      }
+      await runEdit(tabId, (doc) =>
+        annotAdd(doc, { page, kind: "stamp", rect, image_data: png, color: [0, 0, 0], author: author_ }),
+      );
+    } else if (tl === "image") {
       const path = await pickFile({
         filters: [{ name: t("tool.image"), extensions: ["png", "jpg", "jpeg"] }],
       });
@@ -687,6 +739,34 @@
     const out = await mergeFiles(paths, normalize(target));
     await open(out);
     return true;
+  }
+
+  // ------------------------------------------------------------- signing
+
+  function chooseSignature(png: string) {
+    signature = png;
+    signMenu = false;
+    setTool("sign");
+  }
+
+  function addSignature(png: string, keep: boolean) {
+    if (keep) {
+      signatures = [png, ...signatures.filter((s) => s !== png)].slice(0, 12);
+      void saveSignatures(signatures).catch((e) => (error = String(e)));
+    }
+    chooseSignature(png);
+  }
+
+  function forgetSignature(png: string) {
+    signatures = signatures.filter((s) => s !== png);
+    if (signature === png) signature = null;
+    void saveSignatures(signatures).catch((e) => (error = String(e)));
+  }
+
+  function flatten() {
+    flattenAsk = false;
+    const tab = active;
+    if (tab) void runEdit(tab.id, (doc) => flattenDoc(doc));
   }
 
   function saveNote() {
@@ -924,7 +1004,7 @@
   function onKey(e: KeyboardEvent) {
     // Dialogs handle their own keys.
     if (printOpen || settingsOpen || pwPrompt || unsavedPrompt || noteEdit || restoreOffer) return;
-    if (cropFor || headerFor || splitOpen || mergeFiles_) return;
+    if (cropFor || headerFor || splitOpen || mergeFiles_ || signDialog || flattenAsk) return;
     const typing =
       e.target instanceof HTMLInputElement ||
       e.target instanceof HTMLSelectElement ||
@@ -992,6 +1072,9 @@
 
     void (async () => {
       const s = await startup();
+      void loadSignatures()
+        .then((l) => (signatures = Array.isArray(l) ? l.filter((x) => typeof x === "string") : []))
+        .catch(() => {});
       void userName()
         .then((n) => (defaultAuthor = n))
         .catch(() => {});
@@ -1333,6 +1416,47 @@
           </button>
         {/each}
       </span>
+      <span class="menu sign">
+        <button
+          class:active={tool === "sign"}
+          aria-pressed={tool === "sign"}
+          aria-haspopup="menu"
+          aria-expanded={signMenu}
+          title={t("sig.menuTitle")}
+          onclick={() => (signatures.length ? (signMenu = !signMenu) : (signDialog = true))}
+        >
+          ✍ {t("sig.sign")}
+        </button>
+        {#if signMenu}
+          <div class="menu-list" role="menu">
+            {#each signatures as png (png)}
+              <span class="sig-item">
+                <button role="menuitem" class="sig-pick" onclick={() => chooseSignature(png)}>
+                  <img src={png} alt={t("sig.saved")} />
+                </button>
+                <button
+                  class="sig-forget"
+                  aria-label={t("sig.forget")}
+                  title={t("sig.forget")}
+                  onclick={() => forgetSignature(png)}
+                >
+                  ×
+                </button>
+              </span>
+            {/each}
+            <button
+              role="menuitem"
+              onclick={() => {
+                signMenu = false;
+                signDialog = true;
+              }}
+            >
+              {t("sig.new")}
+            </button>
+          </div>
+        {/if}
+      </span>
+      <button onclick={() => (flattenAsk = true)} title={t("flat.title")}>{t("flat.button")}</button>
       {#if tool !== "select" || selAnnot}<span class="sep"></span>{/if}
       {#if selAnnot}
         <span class="ctx-kind">
@@ -1382,7 +1506,7 @@
           </select>
         </label>
       {/if}
-      {#if !selAnnot && (tool === "note" || tool === "text" || tool === "stamp" || tool === "image")}
+      {#if !selAnnot && (tool === "note" || tool === "text" || tool === "stamp" || tool === "image" || tool === "tick" || tool === "cross" || tool === "sign")}
         <span class="ctx-hint">{t(`hint.${tool}` as "hint.note")}</span>
       {/if}
       {#if selAnnot}
@@ -1466,6 +1590,19 @@
           onsplit={splitPages}
           onclose={() => (splitOpen = false)}
         />
+      {/if}
+      {#if signDialog}
+        <SignatureDialog ondone={addSignature} onclose={() => (signDialog = false)} />
+      {/if}
+      {#if flattenAsk}
+        <Dialog
+          title={t("flat.title")}
+          ok={t("flat.ok")}
+          onok={flatten}
+          oncancel={() => (flattenAsk = false)}
+        >
+          <p class="note">{t("flat.body")}</p>
+        </Dialog>
       {/if}
       {#if mergeFiles_}
         <MergeDialog initial={mergeFiles_} onmerge={combine} onclose={() => (mergeFiles_ = null)} />
@@ -1749,14 +1886,14 @@
   }
   .ctxbar {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 8px;
-    height: 34px;
-    padding: 0 12px;
+    gap: 4px 8px;
+    min-height: 34px;
+    padding: 3px 12px;
     background: var(--bar);
     border-bottom: 1px solid var(--edge);
     flex: none;
-    overflow-x: auto;
     white-space: nowrap;
   }
   .ctx-hint {
@@ -1959,6 +2096,40 @@
     border-radius: 6px;
     color: var(--toast-text);
     z-index: 11;
+  }
+  .menu {
+    position: relative;
+  }
+  .menu-list {
+    position: absolute;
+    top: 100%;
+    inset-inline-start: 0;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 220px;
+    padding: 6px;
+    background: var(--control);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: 0 4px 12px var(--popup-shadow);
+  }
+  .sig-item {
+    display: flex;
+    gap: 4px;
+    align-items: stretch;
+  }
+  .sig-pick {
+    flex: 1;
+    background: var(--paper) !important;
+    padding: 4px;
+  }
+  .sig-pick img {
+    display: block;
+    max-width: 200px;
+    max-height: 50px;
+    margin: auto;
   }
   .toast.notice {
     background: var(--bar);

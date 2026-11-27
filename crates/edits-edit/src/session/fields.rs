@@ -56,6 +56,9 @@ impl Session {
     /// Every field with its value now and where its widgets are now.
     /// Widgets on deleted pages are left out (and fields left without any).
     pub fn fields(&mut self) -> Result<Vec<FieldView>, PdfError> {
+        if self.flattened {
+            return Ok(Vec::new());
+        }
         let base = self.base_fields()?.clone();
         let mut out = Vec::new();
         for mut f in base {
@@ -130,12 +133,37 @@ impl Session {
         cat: &mut Option<Dict>,
         catalog: Option<&Dict>,
     ) -> Result<(), PdfError> {
-        let changed: BTreeMap<Ref, &FieldValue> =
+        let mut changed: BTreeMap<Ref, &FieldValue> =
             self.field_values.iter().filter(|(_, e)| e.cur != e.saved).map(|(r, e)| (*r, &e.versions[e.cur])).collect();
+        // Flattening needs a drawing of every filled field: those the file
+        // left for readers to draw (no appearance) get one from edits.
+        let read;
+        let fields = match &self.fields {
+            Some(f) => f,
+            None if self.flattened => {
+                read = read_fields(&self.base)?;
+                &read
+            }
+            None => return Ok(()),
+        };
+        if self.flattened {
+            for f in fields {
+                let filled = match &f.value {
+                    FieldValue::Text(t) => !t.is_empty(),
+                    FieldValue::Choice(c) => !c.is_empty(),
+                    FieldValue::State(_) => false,
+                };
+                let bare = f.widgets.iter().any(|w| {
+                    self.base.get(w.obj).ok().and_then(|o| o.as_dict().map(|d| d.get(b"AP").is_none())).unwrap_or(false)
+                });
+                if filled && bare && matches!(f.kind, FieldKind::Text | FieldKind::Combo | FieldKind::List) {
+                    changed.entry(f.obj).or_insert(&f.value);
+                }
+            }
+        }
         if changed.is_empty() {
             return Ok(());
         }
-        let Some(fields) = &self.fields else { return Ok(()) };
         // Dictionaries to write, by object: a field and its widget are often one object.
         let mut dicts: BTreeMap<Ref, Dict> = BTreeMap::new();
         let get = |r: Ref, dicts: &mut BTreeMap<Ref, Dict>| -> Result<(), PdfError> {
@@ -624,5 +652,33 @@ mod tests {
         let mut s3 = Session::open(&path).unwrap();
         let f3 = s3.fields().unwrap();
         assert!(matches!(&f3[0].field.value, FieldValue::Text(t) if t.starts_with("علي")));
+    }
+
+    #[test]
+    fn flattening_draws_fields_into_the_page() {
+        let mut s = session();
+        let ids: Vec<Ref> = s.fields().unwrap().iter().map(|f| f.field.obj).collect();
+        s.set_field(ids[0], FieldValue::Text("Ali".into())).unwrap();
+        s.set_field(ids[1], FieldValue::State(Some("Yes".into()))).unwrap();
+        s.flatten().unwrap();
+        assert!(s.take_layout_changed());
+        assert!(s.fields().unwrap().is_empty());
+        let (f, fields) = reread(&s);
+        assert!(fields.is_empty(), "no form left");
+        let page = f.pages().unwrap()[0];
+        let d = crate::session::pages::page_dict(&f, page).unwrap();
+        assert!(d.get(b"Annots").is_none());
+        let contents = d.get(b"Contents").and_then(Obj::as_array).unwrap().to_vec();
+        let Obj::Stream(_, last) = f.resolve(contents.last().unwrap()).unwrap() else { panic!() };
+        let last = String::from_utf8(last).unwrap();
+        // The text field, the check box, the radio button shown on, the combo box and the list.
+        assert!(last.matches(" Do Q").count() >= 4, "{last}");
+        let xo = d.get(b"Resources").unwrap().as_dict().unwrap().get(b"XObject").unwrap().as_dict().unwrap().clone();
+        assert!(xo.get(b"EditsFl0").is_some());
+        // Undone, the form is back.
+        s.undo().unwrap();
+        assert_eq!(s.fields().unwrap().len(), 5);
+        let (_, fields) = reread(&s);
+        assert_eq!(fields.len(), 5);
     }
 }
