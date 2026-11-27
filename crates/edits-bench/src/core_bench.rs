@@ -401,3 +401,75 @@ pub fn save(file: &Path) -> Res<bool> {
     let _ = std::fs::remove_dir_all(&dir);
     Ok(check.pass)
 }
+
+/// Writes a copy of `src` with one of every annotation edits makes, for
+/// checking in other readers (Acrobat, Chrome, Edge).
+/// `edits-bench annot-demo SRC OUT`
+pub fn annot_demo(src: &Path, out: &Path) -> Res<bool> {
+    use edits_edit::{Annot, Kind, Session};
+    std::fs::copy(src, out)?;
+    let mut s = Session::open(out)?;
+    let base = |kind: Kind, color: [f32; 3]| {
+        let mut a = Annot::new(0, kind);
+        a.color = color;
+        a.author = "edits".into();
+        a.modified = edits_edit::pdf_date_now();
+        a
+    };
+    let mut hl = base(Kind::Highlight, [1.0, 0.92, 0.23]);
+    hl.quads = vec![[60.0, 760.0, 300.0, 760.0, 60.0, 740.0, 300.0, 740.0]];
+    hl.fit_rect();
+    s.add(hl)?;
+    for (k, y, c) in [
+        (Kind::Underline, 715.0, [0.0, 0.4, 1.0]),
+        (Kind::StrikeOut, 690.0, [0.9, 0.1, 0.1]),
+        (Kind::Squiggly, 665.0, [0.1, 0.6, 0.2]),
+    ] {
+        let mut a = base(k, c);
+        a.quads = vec![[60.0, y + 14.0, 300.0, y + 14.0, 60.0, y, 300.0, y]];
+        a.fit_rect();
+        s.add(a)?;
+    }
+    let mut ink = base(Kind::Ink, [0.9, 0.1, 0.1]);
+    ink.width = 2.0;
+    ink.ink = vec![(0..40).map(|i| [330.0 + i as f32 * 5.0, 700.0 + (i as f32 * 0.5).sin() * 20.0]).collect()];
+    ink.fit_rect();
+    s.add(ink)?;
+    let mut line = base(Kind::Line, [0.0, 0.0, 0.0]);
+    line.line = Some([330.0, 640.0, 520.0, 600.0]);
+    line.arrow = true;
+    line.width = 2.0;
+    line.fit_rect();
+    s.add(line)?;
+    let mut sq = base(Kind::Square, [0.0, 0.4, 1.0]);
+    sq.rect = [60.0, 520.0, 200.0, 600.0];
+    sq.width = 2.0;
+    s.add(sq)?;
+    let mut ci = base(Kind::Circle, [0.9, 0.1, 0.1]);
+    ci.rect = [220.0, 520.0, 320.0, 600.0];
+    ci.fill = Some([1.0, 0.85, 0.85]);
+    ci.width = 1.0;
+    s.add(ci)?;
+    let mut tb = base(Kind::FreeText, [0.0, 0.0, 0.0]);
+    tb.rect = [340.0, 0.0, 540.0, 590.0];
+    tb.font_size = 12.0;
+    tb.width = 1.0;
+    tb.fill = Some([1.0, 1.0, 0.85]);
+    tb.contents = "مربع نص بالعربية مع كلمة English في المنتصف، والأرقام 123.\nA second paragraph in English.".into();
+    tb.fit_text();
+    s.add(tb)?;
+    let mut note = base(Kind::Note, [1.0, 0.85, 0.2]);
+    note.rect = [60.0, 470.0, 80.0, 490.0];
+    note.contents = "ملاحظة لاصقة: sticky note text".into();
+    s.add(note)?;
+    for (i, label) in ["معتمد", "APPROVED", "مسودة DRAFT"].into_iter().enumerate() {
+        let mut st = base(Kind::Stamp, [0.8, 0.05, 0.05]);
+        st.label = label.into();
+        st.font_size = 18.0;
+        st.fit_label(120.0 + i as f32 * 140.0, 490.0);
+        s.add(st)?;
+    }
+    s.save(out)?;
+    println!("wrote {}", out.display());
+    Ok(true)
+}

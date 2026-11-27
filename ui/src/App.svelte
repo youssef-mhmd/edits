@@ -229,6 +229,8 @@
           runEdit(id, (doc) => annotAdd(doc, { ...n, color: drawColor, author: author || defaultAuthor })),
         move: (aid, dx, dy) => runEdit(id, (doc) => annotMove(doc, aid, dx, dy)),
         resize: (aid, rect) => runEdit(id, (doc) => annotResize(doc, aid, rect)),
+        // Note, text, stamp and picture tools: interface not built yet (M2, in progress).
+        place: () => {},
       };
       const saved = bench ? undefined : lastView(realPath);
       if (saved) v.restore(saved);

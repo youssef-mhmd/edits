@@ -20,6 +20,12 @@ pub enum Kind {
     Line,
     Square,
     Circle,
+    /// A sticky note: an icon with text that opens on demand.
+    Note,
+    /// A text box on the page.
+    FreeText,
+    /// A stamp: a word in a frame, or a picture.
+    Stamp,
     /// Any other kind found in a file: kept as it is, can be moved or deleted.
     Other,
 }
@@ -36,6 +42,9 @@ impl Kind {
             Kind::Line => "Line",
             Kind::Square => "Square",
             Kind::Circle => "Circle",
+            Kind::Note => "Text",
+            Kind::FreeText => "FreeText",
+            Kind::Stamp => "Stamp",
             Kind::Other => "",
         }
     }
@@ -50,6 +59,9 @@ impl Kind {
             b"Line" => Kind::Line,
             b"Square" => Kind::Square,
             b"Circle" => Kind::Circle,
+            b"Text" => Kind::Note,
+            b"FreeText" => Kind::FreeText,
+            b"Stamp" => Kind::Stamp,
             _ => Kind::Other,
         }
     }
@@ -59,7 +71,8 @@ impl Kind {
         matches!(self, Kind::Highlight | Kind::Underline | Kind::StrikeOut | Kind::Squiggly)
     }
 
-    /// edits can draw its appearance (so colour and width can change).
+    /// edits can draw this kind's appearance (so colour and width can
+    /// change). Stamps also need a label or picture: see [`Annot::drawable`].
     pub fn drawable(self) -> bool {
         self != Kind::Other
     }
@@ -117,7 +130,27 @@ pub struct Annot {
     /// other apps until their look is changed: their own appearance is kept.
     #[serde(default = "yes")]
     pub own_ap: bool,
+    /// Text size of text boxes and stamps, in points.
+    #[serde(default = "twelve")]
+    pub font_size: f32,
+    /// A stamp's word.
+    #[serde(default)]
+    pub label: String,
+    /// A stamp's picture.
+    #[serde(default)]
+    pub image: Option<std::sync::Arc<crate::image::PdfImage>>,
 }
+
+fn twelve() -> f32 {
+    12.0
+}
+
+/// Space between a text box's edge and its text, in points.
+pub const TEXT_PAD: f32 = 3.0;
+/// A stamp's margin around its word, as a share of its height.
+pub const STAMP_PAD: f32 = 0.24;
+/// A sticky note's icon size, in points.
+pub const NOTE_SIZE: f32 = 20.0;
 
 fn one() -> f32 {
     1.0
@@ -146,7 +179,44 @@ impl Annot {
             author: String::new(),
             modified: String::new(),
             own_ap: true,
+            font_size: 12.0,
+            label: String::new(),
+            image: None,
         }
+    }
+
+    /// edits can draw this annotation's appearance.
+    pub fn drawable(&self) -> bool {
+        match self.kind {
+            Kind::Stamp => !self.label.is_empty() || self.image.is_some(),
+            k => k.drawable(),
+        }
+    }
+
+    /// A text box's text laid out in its box.
+    pub fn text_layout(&self) -> edits_text::Layout {
+        let w = (self.rect[2] - self.rect[0] - 2.0 * TEXT_PAD).max(1.0);
+        edits_text::layout(&self.contents, self.font_size, w)
+    }
+
+    /// Grows or shrinks a text box downwards to fit its text, keeping its top.
+    pub fn fit_text(&mut self) {
+        if self.kind != Kind::FreeText {
+            return;
+        }
+        let h = self.text_layout().height().max(self.font_size * 1.2) + 2.0 * TEXT_PAD;
+        self.rect[1] = self.rect[3] - h;
+    }
+
+    /// A stamp's frame around its word, its top-left corner at `left`, `top`.
+    pub fn fit_label(&mut self, left: f32, top: f32) {
+        let l = edits_text::layout(&self.label.replace('\n', " "), self.font_size, 0.0);
+        let ink = l.ink().unwrap_or([0.0, 0.0, l.width, self.font_size]);
+        // The appearance keeps 18% of the height clear above and below the
+        // ink, and as much at each side; so the word is drawn at font_size.
+        let h = (ink[3] - ink[1]) / (1.0 - 2.0 * STAMP_PAD);
+        let w = ink[2] - ink[0] + 2.0 * STAMP_PAD * h;
+        self.rect = [left, top - h, left + w, top];
     }
 
     /// The bounding rectangle of the quads, grown by `pad` points.
@@ -249,6 +319,27 @@ impl Annot {
         a.author = d.get(b"T").and_then(Obj::text).unwrap_or_default();
         a.modified = d.get(b"M").and_then(Obj::text).unwrap_or_default();
         a.own_ap = false;
+        if kind == Kind::Stamp {
+            a.label = d.get(b"EditsLabel").and_then(Obj::text).unwrap_or_default();
+        }
+        if kind == Kind::FreeText {
+            // "/Helv 12 Tf 0 0 1 rg": size and colour from the default appearance.
+            let da = d.get(b"DA").and_then(Obj::text).unwrap_or_default();
+            let words: Vec<&str> = da.split_whitespace().collect();
+            if let Some(i) = words.iter().position(|w| *w == "Tf")
+                && let Some(size) = i.checked_sub(1).and_then(|k| words[k].parse::<f32>().ok())
+            {
+                a.font_size = size.clamp(1.0, 200.0);
+            }
+            if let Some(i) = words.iter().position(|w| *w == "rg")
+                && i >= 3
+                && let (Ok(r), Ok(g), Ok(b)) = (words[i - 3].parse(), words[i - 2].parse(), words[i - 1].parse())
+            {
+                a.color = [r, g, b];
+            }
+            a.width =
+                d.get(b"BS").and_then(Obj::as_dict).and_then(|bs| bs.get(b"W")).and_then(Obj::as_f32).unwrap_or(0.0);
+        }
         if kind.is_markup() {
             let q = nums(b"QuadPoints").unwrap_or_default();
             a.quads = q.as_chunks::<8>().0.to_vec();
@@ -342,8 +433,11 @@ mod tests {
         assert!(!a.own_ap);
         let link = parse(b"<< /Subtype /Link /Rect [0 0 1 1] >>", &mut 0).unwrap();
         assert!(Annot::from_dict(0, link.as_dict().unwrap()).is_none());
-        let stamp = parse(b"<< /Subtype /Stamp /Rect [0 0 10 10] >>", &mut 0).unwrap();
-        assert_eq!(Annot::from_dict(0, stamp.as_dict().unwrap()).unwrap().kind, Kind::Other);
+        let clip = parse(b"<< /Subtype /FileAttachment /Rect [0 0 10 10] >>", &mut 0).unwrap();
+        assert_eq!(Annot::from_dict(0, clip.as_dict().unwrap()).unwrap().kind, Kind::Other);
+        let ft = parse(b"<< /Subtype /FreeText /Rect [0 0 10 10] /DA (/Helv 9 Tf 0 0 1 rg) >>", &mut 0).unwrap();
+        let ft = Annot::from_dict(0, ft.as_dict().unwrap()).unwrap();
+        assert_eq!((ft.kind, ft.font_size, ft.color), (Kind::FreeText, 9.0, [0.0, 0.0, 1.0]));
     }
 
     #[test]

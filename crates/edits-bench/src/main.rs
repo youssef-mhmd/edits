@@ -9,6 +9,7 @@
 //! edits-bench startup --exe EXE [--runs N]       cold start only
 //! edits-bench text FILE [PAGE]                   print a page's text as PDFium gives it (logical order check)
 //! edits-bench search FILE QUERY                 search timing, cold and indexed (PRD 7)
+//! edits-bench annot-demo SRC OUT              a copy of SRC with every kind of annotation edits makes
 //! edits-bench save FILE                        incremental save timing, on a copy (PRD 7)
 //! edits-bench text-check [DIR]                  page text against tests/text (reading order regressions)
 //! edits-bench check [DIR]                          open and render every corpus file, one process each
@@ -88,6 +89,10 @@ fn main() -> ExitCode {
         "search" => match (args.first(), args.get(1)) {
             (Some(f), Some(q)) => core_bench::search(&PathBuf::from(f), q),
             _ => Err("search needs FILE QUERY".into()),
+        },
+        "annot-demo" => match (args.first(), args.get(1)) {
+            (Some(a), Some(b)) => core_bench::annot_demo(Path::new(a), Path::new(b)),
+            _ => Err("annot-demo needs SRC OUT".into()),
         },
         "save" => match args.first() {
             Some(f) => core_bench::save(&PathBuf::from(f)),

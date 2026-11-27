@@ -310,10 +310,18 @@ impl Session {
                 if !list.iter().any(|o| o.as_ref() == Some(r)) {
                     list.push(Obj::Ref(r));
                 }
-                let ap = if a.own_ap && a.kind.drawable() {
+                let ap = if a.own_ap && a.drawable() {
+                    let mut extra = Vec::new();
+                    let form = appearance(a, &mut |o| {
+                        let r = (next, 0);
+                        next += 1;
+                        extra.push((r, o));
+                        r
+                    });
                     let ar = (next, 0);
                     next += 1;
-                    objects.push((ar, appearance(a)));
+                    objects.extend(extra);
+                    objects.push((ar, form));
                     Some(ar)
                 } else {
                     None
@@ -396,8 +404,88 @@ fn reals(v: &[f32]) -> Obj {
     Obj::Array(v.iter().map(|x| Obj::Real(*x as f64)).collect())
 }
 
-/// The appearance stream of `a`, as edits draws it.
-fn appearance(a: &Annot) -> Obj {
+fn deflate(d: &[u8]) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    let _ = z.write_all(d);
+    z.finish().unwrap_or_default()
+}
+
+/// The objects of an embedded subset font; returns the Type0 font.
+fn font_objects(f: &edits_text::PdfFont, alloc: &mut dyn FnMut(Obj) -> Ref) -> Ref {
+    let ft = edits_text::font();
+    let k = 1000.0 / ft.units_per_em;
+    let mut file = Dict::default();
+    file.set(b"Length1", Obj::Int(f.program.len() as i64));
+    file.set(b"Filter", Obj::name("FlateDecode"));
+    let file = alloc(Obj::Stream(file, deflate(&f.program)));
+    let base = Obj::name(&f.base_font);
+    let mut desc = Dict::default();
+    desc.set(b"Type", Obj::name("FontDescriptor"));
+    desc.set(b"FontName", base.clone());
+    desc.set(b"Flags", Obj::Int(4));
+    desc.set(b"FontBBox", reals(&ft.bbox.map(|v| v * k)));
+    desc.set(b"ItalicAngle", Obj::Int(0));
+    desc.set(b"Ascent", Obj::Real((ft.ascent * k) as f64));
+    desc.set(b"Descent", Obj::Real((ft.descent * k) as f64));
+    desc.set(b"CapHeight", Obj::Real((ft.cap_height * k) as f64));
+    desc.set(b"StemV", Obj::Int(80));
+    desc.set(b"FontFile2", Obj::Ref(file));
+    let desc = alloc(Obj::Dict(desc));
+    let mut info = Dict::default();
+    info.set(b"Registry", Obj::Str(b"Adobe".to_vec()));
+    info.set(b"Ordering", Obj::Str(b"Identity".to_vec()));
+    info.set(b"Supplement", Obj::Int(0));
+    let mut w = Vec::new();
+    for (g, width) in &f.widths {
+        w.push(Obj::Int(*g as i64));
+        w.push(Obj::Array(vec![Obj::Real(*width as f64)]));
+    }
+    let mut cid = Dict::default();
+    cid.set(b"Type", Obj::name("Font"));
+    cid.set(b"Subtype", Obj::name("CIDFontType2"));
+    cid.set(b"BaseFont", base.clone());
+    cid.set(b"CIDSystemInfo", Obj::Dict(info));
+    cid.set(b"FontDescriptor", Obj::Ref(desc));
+    cid.set(b"W", Obj::Array(w));
+    cid.set(b"DW", Obj::Int(1000));
+    cid.set(b"CIDToGIDMap", Obj::name("Identity"));
+    let cid = alloc(Obj::Dict(cid));
+    let tu = alloc(Obj::Stream(Dict::default(), f.to_unicode.clone()));
+    let mut t0 = Dict::default();
+    t0.set(b"Type", Obj::name("Font"));
+    t0.set(b"Subtype", Obj::name("Type0"));
+    t0.set(b"BaseFont", base);
+    t0.set(b"Encoding", Obj::name("Identity-H"));
+    t0.set(b"DescendantFonts", Obj::Array(vec![Obj::Ref(cid)]));
+    t0.set(b"ToUnicode", Obj::Ref(tu));
+    alloc(Obj::Dict(t0))
+}
+
+/// An image XObject (and its soft mask); returns the image.
+fn image_objects(img: &crate::image::PdfImage, alloc: &mut dyn FnMut(Obj) -> Ref) -> Ref {
+    let mut d = Dict::default();
+    d.set(b"Type", Obj::name("XObject"));
+    d.set(b"Subtype", Obj::name("Image"));
+    d.set(b"Width", Obj::Int(img.width as i64));
+    d.set(b"Height", Obj::Int(img.height as i64));
+    d.set(b"BitsPerComponent", Obj::Int(8));
+    if let Some(alpha) = &img.alpha {
+        let mut m = d.clone();
+        m.set(b"ColorSpace", Obj::name("DeviceGray"));
+        m.set(b"Filter", Obj::name("FlateDecode"));
+        let mask = alloc(Obj::Stream(m, alpha.clone()));
+        d.set(b"SMask", Obj::Ref(mask));
+    }
+    d.set(b"ColorSpace", Obj::name(&img.color_space));
+    d.set(b"Filter", Obj::name(&img.filter));
+    alloc(Obj::Stream(d, img.data.clone()))
+}
+
+/// The appearance stream of `a`, as edits draws it. Fonts and pictures it
+/// uses are added through `alloc`, which returns their object references.
+fn appearance(a: &Annot, alloc: &mut dyn FnMut(Obj) -> Ref) -> Obj {
+    use crate::model::{Kind, TEXT_PAD};
     let mut gs = Dict::default();
     gs.set(b"Type", Obj::name("ExtGState"));
     for (k, v) in crate::ap::graphics_state(a) {
@@ -413,12 +501,66 @@ fn appearance(a: &Annot) -> Obj {
     ext.set(b"GS0", Obj::Dict(gs));
     let mut res = Dict::default();
     res.set(b"ExtGState", Obj::Dict(ext));
+    let mut content = crate::ap::content(a);
+    let [l, b, r, t] = a.rect;
+    // Text: a text box's contents, or a stamp's word scaled to its frame.
+    let text = match a.kind {
+        Kind::FreeText if !a.contents.trim().is_empty() => {
+            let lay = a.text_layout();
+            Some((lay, l + TEXT_PAD, t - TEXT_PAD, r - l - 2.0 * TEXT_PAD))
+        }
+        Kind::Stamp if a.image.is_none() && !a.label.is_empty() => {
+            // Fit the ink (not the font's line box) inside the frame, centred.
+            let one = edits_text::layout(&a.label.replace('\n', " "), 10.0, 0.0);
+            one.ink().map(|ink| {
+                let pad = (t - b) * crate::model::STAMP_PAD;
+                let (iw, ih) = ((ink[2] - ink[0]).max(0.1), (ink[3] - ink[1]).max(0.1));
+                let k = ((r - l - 2.0 * pad) / iw).min((t - b - 2.0 * pad) / ih);
+                let lay = edits_text::layout(&a.label.replace('\n', " "), (10.0 * k).max(0.5), 0.0);
+                // Line start and baseline that put the scaled ink box in the middle.
+                let x = (l + r) / 2.0 - (ink[0] + ink[2]) / 2.0 * k;
+                let baseline = (b + t) / 2.0 - (ink[1] + ink[3]) / 2.0 * k;
+                let top = baseline + lay.first_baseline();
+                let w = lay.lines.first().map_or(0.0, |x| x.width);
+                (lay, x, top, w)
+            })
+        }
+        _ => None,
+    };
+    if let Some((lay, left, top, width)) = text {
+        let pt = edits_text::pdf_text(&[(&lay, left, top, width, a.color)], "F0");
+        let font = font_objects(&pt.font, alloc);
+        let mut fonts = Dict::default();
+        fonts.set(b"F0", Obj::Ref(font));
+        res.set(b"Font", Obj::Dict(fonts));
+        content += &format!(
+            "q {} {} {} {} re W n\n{}Q\n",
+            crate::pdf::object::real(l as f64),
+            crate::pdf::object::real(b as f64),
+            crate::pdf::object::real((r - l) as f64),
+            crate::pdf::object::real((t - b) as f64),
+            pt.ops
+        );
+    }
+    if let Some(img) = a.image.as_deref().filter(|_| a.kind == Kind::Stamp) {
+        let im = image_objects(img, alloc);
+        let mut xo = Dict::default();
+        xo.set(b"Im0", Obj::Ref(im));
+        res.set(b"XObject", Obj::Dict(xo));
+        content += &format!(
+            "q {} 0 0 {} {} {} cm /Im0 Do Q\n",
+            crate::pdf::object::real((r - l) as f64),
+            crate::pdf::object::real((t - b) as f64),
+            crate::pdf::object::real(l as f64),
+            crate::pdf::object::real(b as f64)
+        );
+    }
     let mut form = Dict::default();
     form.set(b"Type", Obj::name("XObject"));
     form.set(b"Subtype", Obj::name("Form"));
     form.set(b"BBox", reals(&a.rect));
     form.set(b"Resources", Obj::Dict(res));
-    Obj::Stream(form, crate::ap::content(a).into_bytes())
+    Obj::Stream(form, content.into_bytes())
 }
 
 /// The annotation dictionary for `a`: the file's own dictionary with the
@@ -437,9 +579,46 @@ fn annot_dict(a: &Annot, base: Option<Dict>, page: Ref, ap: Option<Ref>) -> Dict
         // Print (bit 3), as other readers do for comments.
         d.set(b"F", Obj::Int(4));
     }
-    if a.kind.drawable() {
-        d.set(b"C", reals(&a.color));
-        d.set(b"CA", Obj::Real(a.opacity as f64));
+    match a.kind {
+        // A text box's /C is its background; its text colour is in /DA.
+        crate::model::Kind::FreeText => {
+            match a.fill {
+                Some(f) => d.set(b"C", reals(&f)),
+                None => d.remove(b"C"),
+            }
+            let [r, g, b] = a.color;
+            let da = format!(
+                "/Helv {} Tf {} {} {} rg",
+                crate::pdf::object::real(a.font_size as f64),
+                crate::pdf::object::real(r as f64),
+                crate::pdf::object::real(g as f64),
+                crate::pdf::object::real(b as f64)
+            );
+            d.set(b"DA", Obj::Str(da.into_bytes()));
+            let rtl = a.text_layout().lines.first().is_some_and(|l| l.rtl);
+            d.set(b"Q", Obj::Int(if rtl { 2 } else { 0 }));
+            d.set(b"CA", Obj::Real(a.opacity as f64));
+        }
+        k if k.drawable() => {
+            d.set(b"C", reals(&a.color));
+            d.set(b"CA", Obj::Real(a.opacity as f64));
+        }
+        _ => {}
+    }
+    match a.kind {
+        crate::model::Kind::Note => {
+            d.set(b"Name", Obj::name("Comment"));
+            if d.get(b"Open").is_none() {
+                d.set(b"Open", Obj::Bool(false));
+            }
+        }
+        crate::model::Kind::Stamp if !a.label.is_empty() => {
+            // Kept so that edits can draw the stamp again after reopening.
+            d.set(b"EditsLabel", encode_text(&a.label));
+            d.set(b"Name", Obj::name("Draft"));
+        }
+        crate::model::Kind::Stamp if a.image.is_some() => d.set(b"Name", Obj::name("Image")),
+        _ => {}
     }
     if !a.modified.is_empty() {
         d.set(b"M", Obj::Str(a.modified.as_bytes().to_vec()));
@@ -479,7 +658,10 @@ fn annot_dict(a: &Annot, base: Option<Dict>, page: Ref, ap: Option<Ref>) -> Dict
             None => d.remove(b"IC"),
         }
     }
-    if a.kind.drawable() && !a.kind.is_markup() {
+    if a.kind.drawable()
+        && !a.kind.is_markup()
+        && !matches!(a.kind, crate::model::Kind::Note | crate::model::Kind::Stamp)
+    {
         let mut bs = Dict::default();
         bs.set(b"W", Obj::Real(a.width as f64));
         d.set(b"BS", Obj::Dict(bs));
@@ -591,5 +773,65 @@ mod tests {
         b.splice(t..t, b"/Encrypt 9 0 R ".iter().copied());
         std::fs::write(&path, b).unwrap();
         assert!(matches!(Session::open(&path), Err(PdfError::Encrypted)));
+    }
+
+    #[test]
+    fn text_boxes_stamps_notes_and_pictures_embed_what_they_need() {
+        let path = temp_pdf("text.pdf");
+        let mut s = Session::open(&path).unwrap();
+        let mut tb = Annot::new(0, Kind::FreeText);
+        tb.rect = [10.0, 0.0, 150.0, 90.0];
+        tb.contents = "مرحبا بالعالم
+Hello"
+            .into();
+        tb.font_size = 10.0;
+        tb.width = 0.0;
+        tb.fit_text();
+        assert!(tb.rect[1] > 40.0 && tb.rect[1] < 85.0, "two lines high: {:?}", tb.rect);
+        s.add(tb).unwrap();
+        let mut st = Annot::new(0, Kind::Stamp);
+        st.label = "معتمد APPROVED".into();
+        st.font_size = 16.0;
+        st.color = [0.8, 0.0, 0.0];
+        st.fit_label(20.0, 60.0);
+        s.add(st).unwrap();
+        let mut note = Annot::new(0, Kind::Note);
+        note.rect = [150.0, 70.0, 170.0, 90.0];
+        note.contents = "a note".into();
+        s.add(note).unwrap();
+        let mut png = Vec::new();
+        {
+            let mut e = png::Encoder::new(&mut png, 1, 1);
+            e.set_color(png::ColorType::Rgb);
+            let mut w = e.write_header().unwrap();
+            w.write_image_data(&[0, 128, 255]).unwrap();
+        }
+        let mut pic = Annot::new(0, Kind::Stamp);
+        pic.rect = [100.0, 10.0, 140.0, 30.0];
+        pic.image = Some(std::sync::Arc::new(crate::image::PdfImage::from_bytes(&png).unwrap()));
+        s.add(pic).unwrap();
+
+        let mut bytes = std::fs::read(s.path()).unwrap();
+        bytes.extend_from_slice(&s.tail().unwrap());
+        let f = PdfFile::open(bytes).unwrap();
+        let (_, _, annots) = f.page_annots(0).unwrap();
+        assert_eq!(annots.len(), 5);
+        let kinds: Vec<Kind> = annots
+            .iter()
+            .filter_map(|o| Annot::from_dict(0, f.resolve(o).unwrap().as_dict()?))
+            .map(|a| a.kind)
+            .collect();
+        assert_eq!(kinds, [Kind::Square, Kind::FreeText, Kind::Stamp, Kind::Note, Kind::Stamp]);
+        // The text box's appearance uses an embedded subset font with a ToUnicode map.
+        let tb = f.resolve(&annots[1]).unwrap();
+        let ap = f.resolve(tb.as_dict().unwrap().get(b"AP").unwrap()).unwrap();
+        let n = f.resolve(ap.as_dict().unwrap().get(b"N").unwrap()).unwrap();
+        let fonts = n.as_dict().unwrap().get(b"Resources").unwrap().as_dict().unwrap().get(b"Font").unwrap();
+        let t0 = f.resolve(fonts.as_dict().unwrap().get(b"F0").unwrap()).unwrap();
+        let t0 = t0.as_dict().unwrap();
+        assert_eq!(t0.name(b"Subtype"), Some(&b"Type0"[..]));
+        assert!(t0.get(b"ToUnicode").is_some());
+        let stamp = Annot::from_dict(0, f.resolve(&annots[2]).unwrap().as_dict().unwrap()).unwrap();
+        assert_eq!(stamp.label, "معتمد APPROVED", "the label survives for redrawing");
     }
 }

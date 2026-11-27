@@ -54,13 +54,19 @@ export const MAX_ZOOM = 8;
 export type ViewMode = "continuous" | "single" | "two-page";
 
 /** What a mouse press on a page does: select text and annotations, or draw. */
-export type Tool = "select" | "ink" | "line" | "arrow" | "square" | "circle";
+export type Tool =
+  "select" | "ink" | "line" | "arrow" | "square" | "circle" | "note" | "text" | "stamp" | "image";
+
+/** Tools that place something where the page is clicked (or a box is dragged). */
+const PLACING: Tool[] = ["note", "text", "stamp", "image"];
 
 /** Carries out annotation edits (the app does the IPC and the redrawing). */
 export interface Editor {
   add(n: Omit<NewAnnot, "color" | "author">): Promise<void>;
   move(id: number, dx: number, dy: number): Promise<void>;
   resize(id: number, rect: number[]): Promise<void>;
+  /** A placing tool was used: `rect` is the box dragged, or a point (left = right). */
+  place(tool: Tool, page: number, rect: number[]): void;
 }
 
 /** An annotation being pressed, moved, resized or drawn. */
@@ -311,6 +317,8 @@ export class Viewer {
   onSelection: (has: boolean) => void = () => {};
   /** Called when an annotation is selected, or with null when none is. */
   onAnnotSelect: (a: AnnotView | null) => void = () => {};
+  /** Called when an annotation is double-clicked (to edit its text). */
+  onAnnotOpen: (a: AnnotView) => void = () => {};
   /** Does annotation edits; null while editing is not possible. */
   editor: Editor | null = null;
   private _tool: Tool = "select";
@@ -1214,8 +1222,12 @@ export class Viewer {
       this.gesture = { type: "resize", a: this.selAnnot, handle, rect: [...this.selAnnot.rect] };
       return;
     }
-    const hit = e.detail === 1 ? this.annotAt(at.page, at.fx, at.fy) : null;
-    if (hit) {
+    const hit = this.annotAt(at.page, at.fx, at.fy);
+    if (hit && e.detail === 2 && this.selAnnot?.id === hit.id) {
+      this.onAnnotOpen(hit);
+      return;
+    }
+    if (hit && e.detail === 1) {
       this.selectAnnot(hit);
       this.clearSelection();
       this.gesture = { type: "press", a: hit, fx: at.fx, fy: at.fy, x: e.clientX, y: e.clientY, at };
@@ -1518,10 +1530,15 @@ export class Viewer {
     return !["highlight", "underline", "strikeout", "squiggly"].includes(a.kind);
   }
 
+  /** Has resize handles: not text markup, notes (a fixed icon) or other apps' kinds. */
+  private resizable(a: AnnotView): boolean {
+    return this.movable(a) && a.kind !== "other" && a.kind !== "note";
+  }
+
   /** The resize handle of the selected annotation under a point, if any. */
   private handleAt(at: { page: number; fx: number; fy: number }): string | null {
     const a = this.selAnnot;
-    if (!a || a.page !== at.page || !this.movable(a) || a.kind === "other") return null;
+    if (!a || a.page !== at.page || !this.resizable(a)) return null;
     const p = this.info.pages[at.page];
     const hx = (HANDLE_PX + 2) / (p.w * this._zoom);
     const hy = (HANDLE_PX + 2) / (p.h * this._zoom);
@@ -1612,7 +1629,12 @@ export class Viewer {
         const [a, b] = [g.pts[0], g.pts[g.pts.length - 1]];
         const tiny = Math.hypot((b[0] - a[0]) * p.w, (b[1] - a[1]) * p.h) * this._zoom < 3;
         const { width, fill } = this.drawStyle;
-        if (g.tool === "ink") await ed.add({ page: g.page, kind: "ink", ink: [g.pts], width });
+        if (PLACING.includes(g.tool)) {
+          const rect = tiny
+            ? [a[0], a[1], a[0], a[1]]
+            : [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])];
+          ed.place(g.tool, g.page, rect);
+        } else if (g.tool === "ink") await ed.add({ page: g.page, kind: "ink", ink: [g.pts], width });
         else if (tiny) return;
         else if (g.tool === "line" || g.tool === "arrow")
           await ed.add({ page: g.page, kind: "line", line: [...a, ...b], width, arrow: g.tool === "arrow" });
@@ -1665,7 +1687,7 @@ export class Viewer {
       box.style.width = pct(r[2] - r[0]);
       box.style.height = pct(r[3] - r[1]);
       v.alayer.append(box);
-      if (this.movable(a) && a.kind !== "other") {
+      if (this.resizable(a)) {
         for (const [name, x, y] of this.handles(r)) {
           const hd = document.createElement("div");
           hd.className = `ahandle ${name}`;
@@ -1701,7 +1723,7 @@ export class Viewer {
         shape("polyline", { points: g.pts.map((p) => p.join(",")).join(" "), fill: "none" });
       else if (g.tool === "line" || g.tool === "arrow")
         shape("line", { x1: String(p0[0]), y1: String(p0[1]), x2: String(p1[0]), y2: String(p1[1]) });
-      else if (g.tool === "square")
+      else if (g.tool === "square" || g.tool === "text" || g.tool === "image")
         shape("rect", {
           x: String(Math.min(p0[0], p1[0])),
           y: String(Math.min(p0[1], p1[1])),

@@ -146,6 +146,49 @@ pub fn content(a: &Annot) -> String {
                 (false, false) => " n\n",
             };
         }
+        Kind::Note => {
+            // A note icon: a coloured sheet with three lines of "text".
+            let [l, bt, rt, tp] = a.rect;
+            let (w, h) = (rt - l, tp - bt);
+            s += &format!(
+                "{} {} {} rg 0.25 0.25 0.25 RG 0.8 w {} {} {} {} re B\n1 1 1 RG 1.4 w 1 J\n",
+                n(r),
+                n(g),
+                n(b),
+                n(l + 1.0),
+                n(bt + 1.0),
+                n(w - 2.0),
+                n(h - 2.0)
+            );
+            for k in [0.7, 0.5, 0.3] {
+                let y = bt + h * k;
+                s += &format!("{} {} m {} {} l S\n", n(l + w * 0.22), n(y), n(rt - w * 0.22), n(y));
+            }
+        }
+        Kind::FreeText | Kind::Stamp => {
+            // The box; the text or picture is added by the caller, which
+            // owns the font and image resources.
+            let [l, bt, rt, tp] = a.rect;
+            if let Some([fr, fg, fb]) = a.fill {
+                s +=
+                    &format!("{} {} {} rg {} {} {} {} re f\n", n(fr), n(fg), n(fb), n(l), n(bt), n(rt - l), n(tp - bt));
+            }
+            let w = if a.kind == Kind::Stamp && a.image.is_none() { (a.font_size / 10.0).max(1.5) } else { a.width };
+            if w > 0.0 && (a.kind == Kind::FreeText || a.image.is_none()) {
+                let h = w / 2.0;
+                s += &format!(
+                    "{} {} {} RG {} w {} {} {} {} re S\n",
+                    n(r),
+                    n(g),
+                    n(b),
+                    n(w),
+                    n(l + h),
+                    n(bt + h),
+                    n(rt - l - w),
+                    n(tp - bt - w)
+                );
+            }
+        }
         Kind::Other => {}
     }
     s

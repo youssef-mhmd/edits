@@ -76,6 +76,10 @@ pub struct View {
     pub contents: String,
     pub author: String,
     pub modified: String,
+    pub font_size: f32,
+    pub label: String,
+    /// A picture stamp.
+    pub picture: bool,
 }
 
 /// A new annotation from the front end, geometry in page fractions.
@@ -106,6 +110,21 @@ pub struct NewAnnot {
     pub arrow: bool,
     #[serde(default)]
     pub author: String,
+    /// Notes and text boxes.
+    #[serde(default)]
+    pub contents: String,
+    #[serde(default = "twelve")]
+    pub font_size: f32,
+    /// A stamp's word.
+    #[serde(default)]
+    pub label: String,
+    /// A picture file for a picture stamp.
+    #[serde(default)]
+    pub image_path: Option<String>,
+}
+
+fn twelve() -> f32 {
+    12.0
 }
 
 fn one() -> f32 {
@@ -122,6 +141,7 @@ pub struct Style {
     pub width: Option<f32>,
     pub opacity: Option<f32>,
     pub contents: Option<String>,
+    pub font_size: Option<f32>,
 }
 
 /// Deserialises a field that may be absent, null, or a value.
@@ -178,6 +198,9 @@ fn view(engine: &Engine, doc: DocId, id: AnnotId, a: &Annot) -> Result<View, Str
         contents: a.contents.clone(),
         author: a.author.clone(),
         modified: a.modified.clone(),
+        font_size: a.font_size,
+        label: a.label.clone(),
+        picture: a.image.is_some(),
     })
 }
 
@@ -281,6 +304,57 @@ pub async fn annot_add(app: tauri::AppHandle, doc: DocId, annot: NewAnnot) -> Re
             Kind::Square | Kind::Circle => {
                 a.rect = user_rect(engine, doc, n.page, n.rect.ok_or("no rectangle")?)?;
             }
+            Kind::Note => {
+                // The icon's top-left corner at the point clicked.
+                let r = n.rect.ok_or("no place")?;
+                let p = user(engine, doc, n.page, vec![[r[0], r[1]]])?[0];
+                let s = edits_edit::model::NOTE_SIZE;
+                a.rect = [p[0], p[1] - s, p[0] + s, p[1]];
+                a.contents = n.contents;
+            }
+            Kind::FreeText => {
+                if n.contents.trim().is_empty() {
+                    return Err("the text box is empty".into());
+                }
+                let mut r = user_rect(engine, doc, n.page, n.rect.ok_or("no place")?)?;
+                if r[2] - r[0] < 20.0 {
+                    // A click, not a drag: a box 200 points wide.
+                    r[2] = r[0] + 200.0;
+                }
+                a.rect = r;
+                a.contents = n.contents;
+                a.font_size = n.font_size.clamp(4.0, 144.0);
+                a.width = 0.0;
+                a.fit_text();
+            }
+            Kind::Stamp => {
+                let r = n.rect.ok_or("no place")?;
+                let p = user(engine, doc, n.page, vec![[r[0], r[1]], [r[2], r[3]], [0.0, 0.0], [1.0, 1.0]])?;
+                if let Some(path) = n.image_path {
+                    let bytes = std::fs::read(&path).map_err(|e| format!("cannot read {path}: {e}"))?;
+                    let img = edits_edit::image::PdfImage::from_bytes(&bytes)?;
+                    // A dragged box, or a third of the page wide around the click.
+                    let (pw, ph) = ((p[3][0] - p[2][0]).abs(), (p[3][1] - p[2][1]).abs());
+                    let dragged = (p[1][0] - p[0][0]).abs() > 10.0;
+                    let w = if dragged { (p[1][0] - p[0][0]).abs() } else { (pw / 3.0).min(img.width as f32 * 0.75) };
+                    let h = w * img.height as f32 / img.width as f32;
+                    let (cx, cy) = if dragged {
+                        ((p[0][0] + p[1][0]) / 2.0, (p[0][1] + p[1][1]) / 2.0)
+                    } else {
+                        (p[0][0], p[0][1])
+                    };
+                    let h = h.min(ph);
+                    a.rect = [cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0];
+                    a.image = Some(std::sync::Arc::new(img));
+                } else {
+                    if n.label.trim().is_empty() {
+                        return Err("the stamp has no word".into());
+                    }
+                    a.label = n.label;
+                    a.font_size = n.font_size.clamp(4.0, 144.0);
+                    a.fit_label(p[0][0], p[0][1]);
+                }
+            }
             _ => return Err("this kind of annotation cannot be added yet".into()),
         }
         a.fit_rect();
@@ -314,9 +388,17 @@ pub async fn annot_resize(app: tauri::AppHandle, doc: DocId, id: AnnotId, rect: 
             return Err("too small".into());
         }
         a.resize(to);
-        if a.kind.drawable() && !a.kind.is_markup() && a.kind != Kind::Square && a.kind != Kind::Circle {
+        if matches!(a.kind, Kind::Ink | Kind::Line) {
             // Lines and ink were scaled; their /Rect follows the strokes.
             a.fit_rect();
+        }
+        if a.kind == Kind::FreeText {
+            // The text wraps to the new width; the height follows the text.
+            a.own_ap = true;
+            a.fit_text();
+        }
+        if a.kind == Kind::Stamp && a.drawable() {
+            a.own_ap = true;
         }
         a.modified = edits_edit::pdf_date_now();
         let pages = s.change(id, a).map_err(|e| e.to_string())?;
@@ -352,7 +434,23 @@ pub async fn annot_style(app: tauri::AppHandle, doc: DocId, id: AnnotId, style: 
             a.opacity = o.clamp(0.05, 1.0);
         }
         if let Some(c) = style.contents {
+            if a.kind == Kind::FreeText && c != a.contents {
+                a.own_ap = true;
+            }
             a.contents = c;
+        }
+        if let Some(size) = style.font_size {
+            a.font_size = size.clamp(4.0, 144.0);
+            if a.kind == Kind::Stamp && !a.label.is_empty() {
+                a.own_ap = true;
+                a.fit_label(a.rect[0], a.rect[3]);
+            }
+            if a.kind == Kind::FreeText {
+                a.own_ap = true;
+            }
+        }
+        if a.kind == Kind::FreeText && a.own_ap {
+            a.fit_text();
         }
         a.modified = edits_edit::pdf_date_now();
         let pages = s.change(id, a).map_err(|e| e.to_string())?;

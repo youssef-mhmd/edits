@@ -253,7 +253,18 @@ export const saveDoc = (doc: number, path: string | null = null) => invoke<Saved
 export const userName = () => invoke<string>("user_name");
 
 export type AnnotKind =
-  "highlight" | "underline" | "strikeout" | "squiggly" | "ink" | "line" | "square" | "circle" | "other";
+  | "highlight"
+  | "underline"
+  | "strikeout"
+  | "squiggly"
+  | "ink"
+  | "line"
+  | "square"
+  | "circle"
+  | "note"
+  | "freetext"
+  | "stamp"
+  | "other";
 
 /** An annotation, geometry in page fractions (top-left origin, /Rotate applied). */
 export interface AnnotView {
@@ -272,6 +283,9 @@ export interface AnnotView {
   contents: string;
   author: string;
   modified: string;
+  font_size: number;
+  label: string;
+  picture: boolean;
 }
 
 export interface NewAnnot {
@@ -287,6 +301,10 @@ export interface NewAnnot {
   width?: number;
   arrow?: boolean;
   author?: string;
+  contents?: string;
+  font_size?: number;
+  label?: string;
+  image_path?: string;
 }
 
 export interface AnnotStyle {
@@ -295,6 +313,7 @@ export interface AnnotStyle {
   width?: number;
   opacity?: number;
   contents?: string;
+  font_size?: number;
 }
 
 export const annotsAll = (doc: number) => invoke<AnnotView[]>("annots_all", { doc });

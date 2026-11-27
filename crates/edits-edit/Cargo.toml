@@ -11,6 +11,8 @@ publish = false
 serde.workspace = true
 thiserror.workspace = true
 flate2 = "1"
+png = "0.17"
+edits-text.workspace = true
 
 [lints]
 workspace = true
