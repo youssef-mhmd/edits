@@ -35,6 +35,9 @@
   --field-required: rgb(220 60 60 / 0.6);
   --field-text: #000;
   --on-accent: #fff;
+  --tab-active: #2c2c31;
+  --tab-shadow: rgb(0 0 0 / 0.35);
+  --field-bg: #2a2a2f;
   color-scheme: dark;
 }
 
@@ -67,6 +70,9 @@
   --field-required: rgb(220 60 60 / 0.6);
   --field-text: #000;
   --on-accent: #fff;
+  --tab-active: #ffffff;
+  --tab-shadow: rgb(0 0 0 / 0.12);
+  --field-bg: #ececf1;
   color-scheme: light;
 }
 

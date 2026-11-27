@@ -1808,13 +1808,14 @@
     flex-direction: column;
     height: 100%;
   }
+  /* The tabs and the toolbars are one surface: tabs are pills on it. */
   .tabbar {
     display: flex;
-    align-items: stretch;
-    gap: 1px;
-    height: 32px;
-    padding: 0 6px;
-    background: var(--tabbar);
+    align-items: center;
+    gap: 4px;
+    height: 38px;
+    padding: 4px 8px 0;
+    background: var(--bar);
     overflow-x: auto;
     flex: none;
   }
@@ -1822,21 +1823,23 @@
     display: flex;
     align-items: center;
     gap: 6px;
+    height: 30px;
     max-width: 220px;
     min-width: 80px;
     padding: 0 6px 0 12px;
-    margin-top: 4px;
-    border-radius: 6px 6px 0 0;
+    border-radius: 8px;
     color: var(--muted);
     cursor: default;
     user-select: none;
+    transition: background-color 0.12s;
   }
   .tab:hover {
     background: var(--tab-hover);
   }
   .tab.active {
-    background: var(--bar);
+    background: var(--tab-active);
     color: var(--text);
+    box-shadow: 0 1px 2px var(--tab-shadow);
   }
   .tab:focus-visible {
     outline: 2px solid var(--accent);
@@ -1861,7 +1864,7 @@
     background: var(--control-hover);
   }
   .tab-new {
-    margin-top: 4px;
+    height: 28px;
     padding: 0 10px;
     font-size: 16px;
   }
@@ -1877,6 +1880,35 @@
     white-space: nowrap;
     overflow-x: auto;
     flex: none;
+  }
+  /* One line under the whole top area, below the last bar. */
+  header:has(+ .ctxbar) {
+    border-bottom: none;
+  }
+  /* Flat toolbar buttons: no frame until pointed at. */
+  header button:not(.primary),
+  .ctxbar button:not(.primary):not(.swatch),
+  header select,
+  .ctxbar select {
+    border-color: transparent;
+    background: transparent;
+    border-radius: 6px;
+  }
+  header button:not(.primary):hover:not(:disabled),
+  .ctxbar button:not(.primary):not(.swatch):hover:not(:disabled),
+  header select:hover,
+  .ctxbar select:hover {
+    background: var(--control-hover);
+  }
+  header button.active,
+  .ctxbar button.active {
+    background: var(--selected);
+    border-color: transparent;
+  }
+  header input {
+    border-color: transparent;
+    background: var(--field-bg);
+    border-radius: 6px;
   }
   .name {
     font-weight: 600;
