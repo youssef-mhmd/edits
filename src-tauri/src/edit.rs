@@ -19,7 +19,45 @@ type Slot = Result<Session, String>;
 
 /// Editing sessions of every open document.
 #[derive(Default)]
-pub struct EditState(Mutex<HashMap<DocId, Slot>>);
+pub struct EditState(Mutex<HashMap<DocId, Slot>>, Mutex<HashMap<DocId, edits_edit::Recovery>>);
+
+/// Folder for crash-recovery files (set at start-up).
+static RECOVERY_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+pub fn set_recovery_dir(dir: PathBuf) {
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = RECOVERY_DIR.set(dir);
+}
+
+/// The recovery file for `path` (one per document, named by a hash of its path).
+fn recovery_file(path: &std::path::Path) -> Option<PathBuf> {
+    let key = path.display().to_string().to_lowercase();
+    let h = key.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3));
+    RECOVERY_DIR.get().map(|d| d.join(format!("{h:016x}.json")))
+}
+
+/// Writes the session's unsaved work, or removes the file when there is none.
+fn persist(s: &Session) {
+    let Some(file) = recovery_file(s.path()) else { return };
+    match s.recovery() {
+        Some(r) => {
+            let Ok(text) = serde_json::to_vec(&r) else { return };
+            let tmp = file.with_extension("json.tmp");
+            if std::fs::write(&tmp, text).is_ok() {
+                let _ = std::fs::rename(&tmp, &file);
+            }
+        }
+        None => {
+            let _ = std::fs::remove_file(&file);
+        }
+    }
+}
+
+fn forget_recovery(path: &std::path::Path) {
+    if let Some(f) = recovery_file(path) {
+        let _ = std::fs::remove_file(f);
+    }
+}
 
 impl EditState {
     /// Starts a session for a newly opened document. `pages` is the page
@@ -37,11 +75,27 @@ impl EditState {
             }
             Err(e) => Err(format!("this file cannot be changed: {e}")),
         };
+        // Unsaved work from a session that ended without saving.
+        if let (Ok(s), Some(file)) = (&slot, recovery_file(&path)) {
+            let r = std::fs::read(&file).ok().and_then(|b| serde_json::from_slice::<edits_edit::Recovery>(&b).ok());
+            match r {
+                Some(r) if s.can_restore(&r) => {
+                    self.1.lock().unwrap_or_else(|e| e.into_inner()).insert(doc, r);
+                }
+                _ => {
+                    let _ = std::fs::remove_file(file);
+                }
+            }
+        }
         self.lock().insert(doc, slot);
     }
 
+    /// The document was closed: saved, or its changes given up.
     pub fn closed(&self, doc: DocId) {
-        self.lock().remove(&doc);
+        self.1.lock().unwrap_or_else(|e| e.into_inner()).remove(&doc);
+        if let Some(Ok(s)) = self.lock().remove(&doc) {
+            forget_recovery(s.path());
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<DocId, Slot>> {
@@ -230,6 +284,7 @@ fn show(engine: &Engine, doc: DocId, s: &Session) -> Result<(), String> {
 
 fn changed(engine: &Engine, doc: DocId, s: &Session, pages: Vec<u32>, id: Option<AnnotId>) -> Result<Changed, String> {
     show(engine, doc, s)?;
+    persist(s);
     Ok(Changed { status: s.status(), pages, id })
 }
 
@@ -499,7 +554,10 @@ pub async fn save_doc(app: tauri::AppHandle, doc: DocId, path: Option<String>) -
     with_session(app, doc, move |engine, s| {
         let t = std::time::Instant::now();
         let target = path.map(PathBuf::from).unwrap_or_else(|| s.path().to_path_buf());
+        let before = s.path().to_path_buf();
         s.save(&target).map_err(|e| format!("could not save {}: {e}", target.display()))?;
+        forget_recovery(&before);
+        persist(s);
         engine.reload(doc, Some(target.clone())).map_err(|e| e.to_string())?;
         Ok(Saved { status: s.status(), path: target.display().to_string(), ms: t.elapsed().as_secs_f64() * 1000.0 })
     })
@@ -509,6 +567,35 @@ pub async fn save_doc(app: tauri::AppHandle, doc: DocId, path: Option<String>) -
 #[tauri::command]
 pub async fn edit_status(app: tauri::AppHandle, doc: DocId) -> Result<Status, String> {
     with_session(app, doc, move |_, s| Ok(s.status())).await
+}
+
+/// When unsaved work for `doc` was kept after edits last closed without
+/// saving it (Unix ms), or null.
+#[tauri::command]
+pub fn recovery_offer(edits: tauri::State<'_, EditState>, doc: DocId) -> Option<u64> {
+    edits.1.lock().unwrap_or_else(|e| e.into_inner()).get(&doc).map(|r| r.written as u64)
+}
+
+/// Brings back the unsaved work offered by `recovery_offer`.
+#[tauri::command]
+pub async fn recovery_restore(app: tauri::AppHandle, doc: DocId) -> Result<Changed, String> {
+    use tauri::Manager;
+    let r = app.state::<EditState>().1.lock().unwrap_or_else(|e| e.into_inner()).remove(&doc);
+    let r = r.ok_or("nothing to restore")?;
+    with_session(app, doc, move |engine, s| {
+        let pages = s.restore(r).map_err(|e| e.to_string())?;
+        changed(engine, doc, s, pages, None)
+    })
+    .await
+}
+
+/// Gives up kept or current unsaved work for `doc` (the reader chose not to keep it).
+#[tauri::command]
+pub fn recovery_discard(edits: tauri::State<'_, EditState>, doc: DocId) {
+    edits.1.lock().unwrap_or_else(|e| e.into_inner()).remove(&doc);
+    if let Some(Ok(s)) = edits.lock().get(&doc) {
+        forget_recovery(s.path());
+    }
 }
 
 /// The Windows user name, as the default author of annotations.

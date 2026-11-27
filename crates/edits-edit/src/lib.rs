@@ -9,4 +9,4 @@ pub mod pdf;
 pub mod session;
 
 pub use model::{Annot, AnnotId, Kind, pdf_date_now};
-pub use session::{EditError, Listed, Session, Status, temp_path_for};
+pub use session::{EditError, Listed, Recovery, Session, Status, temp_path_for};

@@ -14,5 +14,8 @@ flate2 = "1"
 png = "0.17"
 edits-text.workspace = true
 
+[dev-dependencies]
+serde_json.workspace = true
+
 [lints]
 workspace = true

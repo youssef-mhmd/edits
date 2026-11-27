@@ -251,6 +251,9 @@ export const editUndo = (doc: number) => invoke<Changed>("edit_undo", { doc });
 export const editRedo = (doc: number) => invoke<Changed>("edit_redo", { doc });
 export const saveDoc = (doc: number, path: string | null = null) => invoke<Saved>("save_doc", { doc, path });
 export const userName = () => invoke<string>("user_name");
+export const recoveryOffer = (doc: number) => invoke<number | null>("recovery_offer", { doc });
+export const recoveryRestore = (doc: number) => invoke<Changed>("recovery_restore", { doc });
+export const recoveryDiscard = (doc: number) => invoke<void>("recovery_discard", { doc });
 
 export type AnnotKind =
   | "highlight"

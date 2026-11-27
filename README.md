@@ -19,7 +19,7 @@ The installer is signed for the updater with a private key kept outside the repo
 
 Open a file with the Open button (Ctrl O), by dropping it on the window, with `edits.exe path\to\file.pdf`, or after installing, from "Open with" in Explorer.
 
-Keys: Ctrl + / Ctrl − / Ctrl + wheel zoom; Ctrl 0 fit width; Ctrl 2 fit page; Ctrl 1 actual size; Ctrl Shift + / Ctrl Shift − rotate; Ctrl G go to page; Page Up/Down, Space, Home, End; ← → turn pages in single and two-page views; Alt ← / Alt → back and forward after links and bookmarks; F4 pages and bookmarks panel; Ctrl F find, F3 / Shift F3 next and previous; drag to select text, double-click a word, triple-click a line, Ctrl A select page, Ctrl C copy; Ctrl Tab / Ctrl Shift Tab switch tabs; Ctrl W close tab; Ctrl P print; Ctrl , settings (theme, language, updates).
+Keys: Ctrl + / Ctrl − / Ctrl + wheel zoom; Ctrl 0 fit width; Ctrl 2 fit page; Ctrl 1 actual size; Ctrl Shift + / Ctrl Shift − rotate; Ctrl G go to page; Page Up/Down, Space, Home, End; ← → turn pages in single and two-page views; Alt ← / Alt → back and forward after links and bookmarks; F4 pages and bookmarks panel; Ctrl F find, F3 / Shift F3 next and previous; drag to select text, double-click a word, triple-click a line, Ctrl A select page, Ctrl C copy; Ctrl Tab / Ctrl Shift Tab switch tabs; Ctrl W close tab; Ctrl P print; Ctrl , settings (theme, language, updates); Ctrl Z / Ctrl Y undo and redo; Ctrl S save, Ctrl Shift S save as; Delete removes the selected annotation; double-click a note or text box to edit it.
 
 ## Tests and benchmarks
 
@@ -43,6 +43,8 @@ powershell -File tests/close.ps1             # closing the window ends the app (
 
 ```
 crates/edits-core/   PDFium wrapper, render thread, priority queue, render worker processes
+crates/edits-edit/   annotations, undo history, own PDF reader and incremental-update writer
+crates/edits-text/   shaping, bidi, line layout, font embedding (bundles IBM Plex Sans Arabic, OFL)
 crates/edits-bench/  benchmarks, corpus generator, corpus checks
 src-tauri/           Tauri app: commands, tile transports
 ui/                  Svelte 5 front end; ui/src/viewer.ts is the page view

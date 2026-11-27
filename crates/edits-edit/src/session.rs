@@ -16,7 +16,7 @@ use crate::model::{Annot, AnnotId};
 use crate::pdf::object::encode_text;
 use crate::pdf::{Dict, FileSource, Obj, PdfError, PdfFile, Ref, write};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct Entry {
     /// Every version this annotation has had; `cur` is the one in effect.
     versions: Vec<Annot>,
@@ -44,7 +44,7 @@ impl Entry {
 /// What an update writes, and the object each new annotation gets.
 type Planned = (Vec<(Ref, Obj)>, HashMap<AnnotId, Ref>);
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 enum Command {
     Add(AnnotId),
     Remove(AnnotId),
@@ -75,6 +75,34 @@ pub enum EditError {
     Io(#[from] std::io::Error),
     #[error("no annotation {0}")]
     Unknown(AnnotId),
+}
+
+/// Unsaved work, written after every change so that it survives a crash
+/// (PRD 8.4). Only valid for the file exactly as it was: `stamp`.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct Recovery {
+    pub path: PathBuf,
+    /// File size and modification time (Unix ms) of the base.
+    pub stamp: (u64, u128),
+    /// When this was written (Unix ms).
+    pub written: u128,
+    entries: BTreeMap<AnnotId, Entry>,
+    imported: HashSet<u32>,
+    undo: Vec<(u64, Command)>,
+    redo: Vec<(u64, Command)>,
+    next_id: AnnotId,
+    next_seq: u64,
+    saved_at: u64,
+}
+
+fn stamp_of(path: &Path) -> Option<(u64, u128)> {
+    let m = std::fs::metadata(path).ok()?;
+    let t = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis();
+    Some((m.len(), t))
+}
+
+fn now_ms() -> u128 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
 }
 
 pub struct Session {
@@ -145,6 +173,47 @@ impl Session {
 
     pub fn status(&self) -> Status {
         Status { dirty: self.at() != self.saved_at, can_undo: !self.undo.is_empty(), can_redo: !self.redo.is_empty() }
+    }
+
+    /// The unsaved work, for a recovery file; None when there is none.
+    pub fn recovery(&self) -> Option<Recovery> {
+        if !self.status().dirty {
+            return None;
+        }
+        Some(Recovery {
+            path: self.path.clone(),
+            stamp: stamp_of(&self.path)?,
+            written: now_ms(),
+            entries: self.entries.clone(),
+            imported: self.imported.clone(),
+            undo: self.undo.clone(),
+            redo: self.redo.clone(),
+            next_id: self.next_id,
+            next_seq: self.next_seq,
+            saved_at: self.saved_at,
+        })
+    }
+
+    /// True if `r` was written for this file as it is now.
+    pub fn can_restore(&self, r: &Recovery) -> bool {
+        stamp_of(&self.path) == Some(r.stamp)
+    }
+
+    /// Takes back unsaved work from a recovery file. Returns the pages it touches.
+    pub fn restore(&mut self, r: Recovery) -> Result<Vec<u32>, EditError> {
+        if !self.can_restore(&r) {
+            return Err(EditError::Io(std::io::Error::other("the file has changed since")));
+        }
+        self.entries = r.entries;
+        self.imported = r.imported;
+        self.undo = r.undo;
+        self.redo = r.redo;
+        self.next_id = r.next_id;
+        self.next_seq = r.next_seq;
+        self.saved_at = r.saved_at;
+        self.rebuild()?;
+        let pages: BTreeSet<u32> = self.entries.values().flat_map(|e| e.versions.iter().map(|a| a.page)).collect();
+        Ok(pages.into_iter().collect())
     }
 
     /// Reads the annotations of `page` from the base file, once.
@@ -833,5 +902,30 @@ Hello"
         assert!(t0.get(b"ToUnicode").is_some());
         let stamp = Annot::from_dict(0, f.resolve(&annots[2]).unwrap().as_dict().unwrap()).unwrap();
         assert_eq!(stamp.label, "معتمد APPROVED", "the label survives for redrawing");
+    }
+
+    #[test]
+    fn unsaved_work_survives_through_a_recovery_file() {
+        let path = temp_pdf("recover.pdf");
+        let mut s = Session::open(&path).unwrap();
+        assert!(s.recovery().is_none(), "nothing to recover when clean");
+        s.add(highlight()).unwrap();
+        let json = serde_json::to_string(&s.recovery().unwrap()).unwrap();
+        let tail = s.tail().unwrap();
+
+        let mut s2 = Session::open(&path).unwrap();
+        let r: Recovery = serde_json::from_str(&json).unwrap();
+        assert_eq!(s2.restore(r).unwrap(), vec![0]);
+        assert_eq!(s2.tail().unwrap(), tail);
+        assert!(s2.status().dirty && s2.status().can_undo);
+        s2.undo().unwrap();
+        assert!(s2.tail().is_none());
+
+        // A file changed since cannot take the old work.
+        let r: Recovery = serde_json::from_str(&json).unwrap();
+        std::fs::write(&path, [crate::pdf::write::tiny_pdf(), b"\n".to_vec()].concat()).unwrap();
+        let mut s3 = Session::open(&path).unwrap();
+        assert!(!s3.can_restore(&r));
+        assert!(s3.restore(r).is_err());
     }
 }

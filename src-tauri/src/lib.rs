@@ -240,9 +240,15 @@ pub fn run() {
             edit::save_doc,
             edit::edit_status,
             edit::user_name,
+            edit::recovery_offer,
+            edit::recovery_restore,
+            edit::recovery_discard,
         ])
         .setup(move |app| {
             *setup_ms_hook.lock().unwrap_or_else(|e| e.into_inner()) = unix_ms();
+            if let Ok(dir) = state::data_dir(app.handle()) {
+                edit::set_recovery_dir(dir.join("recovery"));
+            }
             // The window starts dark (tauri.conf.json); paint it light at
             // once if that is the saved theme, so it never flashes dark.
             if let Some(w) = app.get_webview_window("main") {

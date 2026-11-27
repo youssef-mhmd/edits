@@ -16,6 +16,9 @@
     editUndo,
     saveDoc,
     userName,
+    recoveryOffer,
+    recoveryRestore,
+    recoveryDiscard,
     type Changed,
     type AnnotStyle,
     type AnnotView,
@@ -62,6 +65,20 @@
     canUndo: boolean;
     canRedo: boolean;
   }
+
+  const STAMP_WORDS = ["معتمد", "مسودة", "سري", "APPROVED", "DRAFT", "CONFIDENTIAL", "RECEIVED"];
+  const TOOLS: [Tool, string][] = [
+    ["select", "↖"],
+    ["ink", "✎"],
+    ["line", "╱"],
+    ["arrow", "↗"],
+    ["square", "▭"],
+    ["circle", "◯"],
+    ["note", "🗨"],
+    ["text", "T"],
+    ["stamp", "⎔"],
+    ["image", "🖼"],
+  ];
 
   const MARKUP_COLORS: { rgb: number[]; css: string }[] = [
     { rgb: [1, 0.92, 0.23], css: "#ffeb3b" },
@@ -118,7 +135,19 @@
   let selAnnot: AnnotView | null = $state.raw(null);
   // Every annotation of the active document, for the Comments panel; null until asked for.
   let comments: AnnotView[] | null = $state.raw(null);
-  let noteEdit: { a: AnnotView; text: string } | null = $state(null);
+  /**
+   * The text dialog: a note or text box being written. `a` is an existing
+   * annotation; `create` one to add where the page was clicked.
+   */
+  let noteEdit: {
+    a?: AnnotView;
+    create?: { kind: "note" | "freetext"; page: number; rect: number[] };
+    text: string;
+  } | null = $state(null);
+  let textSize = $state(12);
+  // Set while offering to restore unsaved work kept after a crash.
+  let restoreOffer: { tabId: number; name: string; when: number } | null = $state(null);
+  let stampWord = $state(STAMP_WORDS[0]);
   // Set while asking whether to save a document before it closes.
   let unsavedPrompt: { tab: Tab; resolve: (r: "save" | "discard" | "cancel") => void } | null = $state(null);
   let settingsOpen = $state(false);
@@ -219,6 +248,9 @@
       v.onSelection = (has) => {
         if (id === activeId) hasSel = has;
       };
+      v.onAnnotOpen = (a) => {
+        if (a.kind === "note" || a.kind === "freetext") noteEdit = { a, text: a.contents };
+      };
       v.onAnnotSelect = (a) => {
         if (id === activeId) selAnnot = a;
       };
@@ -230,12 +262,18 @@
         move: (aid, dx, dy) => runEdit(id, (doc) => annotMove(doc, aid, dx, dy)),
         resize: (aid, rect) => runEdit(id, (doc) => annotResize(doc, aid, rect)),
         // Note, text, stamp and picture tools: interface not built yet (M2, in progress).
-        place: () => {},
+        place: (tl, page, rect) => void place(id, tl, page, rect),
       };
       const saved = bench ? undefined : lastView(realPath);
       if (saved) v.restore(saved);
       patchTab(id, { viewer: v });
       activate(id);
+      if (!bench)
+        void recoveryOffer(info.doc)
+          .then((when) => {
+            if (when) restoreOffer = { tabId: id, name: nameOf(realPath), when };
+          })
+          .catch(() => {});
       void loadOutline(info.doc)
         .then((o) => patchTab(id, { outline: o }))
         .catch(() => patchTab(id, { outline: [] }));
@@ -271,6 +309,7 @@
     const r = await askUnsaved(tab);
     if (r === "cancel") return false;
     if (r === "save") return save(tab, false);
+    if (tab.viewer) await recoveryDiscard(tab.viewer.info.doc).catch(() => {});
     return true;
   }
 
@@ -423,10 +462,72 @@
     void runEdit(active.id, (doc) => annotRemove(doc, a.id));
   }
 
+  /** A placing tool was used on tab `tabId`'s page `page`. */
+  async function place(tabId: number, tl: Tool, page: number, rect: number[]) {
+    const author_ = author || defaultAuthor;
+    if (tl === "note") noteEdit = { create: { kind: "note", page, rect }, text: "" };
+    else if (tl === "text") noteEdit = { create: { kind: "freetext", page, rect }, text: "" };
+    else if (tl === "stamp")
+      await runEdit(tabId, (doc) =>
+        annotAdd(doc, {
+          page,
+          kind: "stamp",
+          rect,
+          label: stampWord,
+          font_size: 20,
+          color: drawColor,
+          author: author_,
+        }),
+      );
+    else if (tl === "image") {
+      const path = await pickFile({
+        filters: [{ name: t("tool.image"), extensions: ["png", "jpg", "jpeg"] }],
+      });
+      if (typeof path !== "string") return;
+      await runEdit(tabId, (doc) =>
+        annotAdd(doc, { page, kind: "stamp", rect, image_path: path, color: drawColor, author: author_ }),
+      );
+    }
+  }
+
+  function pickTextSize(size: number) {
+    textSize = size;
+    const a = selAnnot;
+    if (a && (a.kind === "freetext" || (a.kind === "stamp" && a.label))) restyle({ font_size: size });
+  }
+
+  function answerRestore(keep: boolean) {
+    const o = restoreOffer;
+    restoreOffer = null;
+    const v = o && tabs.find((t) => t.id === o.tabId)?.viewer;
+    if (!o || !v) return;
+    if (keep) void runEdit(o.tabId, (doc) => recoveryRestore(doc));
+    else void recoveryDiscard(v.info.doc).catch(() => {});
+  }
+
   function saveNote() {
     const n = noteEdit;
     noteEdit = null;
-    if (n && active) void runEdit(active.id, (doc) => annotStyle(doc, n.a.id, { contents: n.text }));
+    const c = n?.create;
+    if (n && c && active && n.text.trim()) {
+      const tabId = active.id;
+      void runEdit(tabId, (doc) =>
+        annotAdd(doc, {
+          page: c.page,
+          kind: c.kind,
+          rect: c.rect,
+          contents: n.text,
+          font_size: textSize,
+          color: c.kind === "note" ? [1, 0.85, 0.2] : drawColor,
+          author: author || defaultAuthor,
+        }),
+      );
+      viewer?.scroller.focus();
+      return;
+    }
+    if (!n?.a) return;
+    const a = n.a;
+    if (active) void runEdit(active.id, (doc) => annotStyle(doc, a.id, { contents: n.text }));
     viewer?.scroller.focus();
   }
 
@@ -638,7 +739,7 @@
 
   function onKey(e: KeyboardEvent) {
     // Dialogs handle their own keys.
-    if (printOpen || settingsOpen || pwPrompt || unsavedPrompt || noteEdit) return;
+    if (printOpen || settingsOpen || pwPrompt || unsavedPrompt || noteEdit || restoreOffer) return;
     const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement;
     const action = appKeyAction(e) ?? (viewer && !typing ? keyAction(e, viewer) : null);
     if (action) {
@@ -1002,7 +1103,7 @@
       </button>
       <span class="sep"></span>
       <span class="tools" role="group" aria-label={t("tool.group")}>
-        {#each [["select", "↖"], ["ink", "✎"], ["line", "╱"], ["arrow", "↗"], ["square", "▭"], ["circle", "◯"]] as [id, icon] (id)}
+        {#each TOOLS as [id, icon] (id)}
           <button
             class:active={tool === id}
             aria-pressed={tool === id}
@@ -1042,9 +1143,33 @@
           {t("ctx.fill")}
         </button>
       {/if}
+      {#if (!selAnnot && (tool === "text" || tool === "stamp")) || (selAnnot && (selAnnot.kind === "freetext" || (selAnnot.kind === "stamp" && selAnnot.label)))}
+        <label class="ctx-width">
+          {t("ctx.size")}
+          <select
+            value={String(selAnnot ? selAnnot.font_size : textSize)}
+            onchange={(e) => pickTextSize(Number(e.currentTarget.value))}
+          >
+            {#each [8, 10, 12, 14, 18, 24, 32, 48] as sz (sz)}<option value={String(sz)}>
+                {sz} pt
+              </option>{/each}
+          </select>
+        </label>
+      {/if}
+      {#if !selAnnot && tool === "stamp"}
+        <label class="ctx-width">
+          {t("ctx.stampWord")}
+          <select bind:value={stampWord}>
+            {#each STAMP_WORDS as w (w)}<option value={w}>{w}</option>{/each}
+          </select>
+        </label>
+      {/if}
+      {#if !selAnnot && (tool === "note" || tool === "text" || tool === "stamp" || tool === "image")}
+        <span class="ctx-hint">{t(`hint.${tool}` as "hint.note")}</span>
+      {/if}
       {#if selAnnot}
         <button onclick={() => selAnnot && (noteEdit = { a: selAnnot, text: selAnnot.contents })}>
-          {t("ctx.note")}
+          {selAnnot.kind === "freetext" ? t("ctx.text") : t("ctx.note")}
         </button>
         <button onclick={deleteSelected} title={t("ctx.deleteTitle")}>{t("ctx.delete")}</button>
       {/if}
@@ -1161,6 +1286,23 @@
           </div>
         </div>
       {/if}
+      {#if restoreOffer}
+        <div class="overlay">
+          <div class="password" role="alertdialog" aria-modal="true" aria-labelledby="restore-title">
+            <p id="restore-title" dir="auto">
+              <strong>{t("restore.title", { name: restoreOffer.name })}</strong>
+            </p>
+            <p>{t("restore.body", { when: new Date(restoreOffer.when).toLocaleString(lang()) })}</p>
+            <div class="actions">
+              <!-- svelte-ignore a11y_autofocus -->
+              <button class="primary" autofocus onclick={() => answerRestore(true)}>
+                {t("restore.keep")}
+              </button>
+              <button onclick={() => answerRestore(false)}>{t("restore.discard")}</button>
+            </div>
+          </div>
+        </div>
+      {/if}
       {#if noteEdit}
         <div class="overlay">
           <form
@@ -1171,7 +1313,9 @@
             }}
           >
             <label>
-              {t("ctx.noteTitle")}
+              {noteEdit.create?.kind === "freetext" || noteEdit.a?.kind === "freetext"
+                ? t("ctx.textTitle")
+                : t("ctx.noteTitle")}
               <!-- svelte-ignore a11y_autofocus -->
               <textarea
                 rows="5"
@@ -1336,6 +1480,9 @@
     flex: none;
     overflow-x: auto;
     white-space: nowrap;
+  }
+  .ctx-hint {
+    color: var(--muted);
   }
   .ctx-kind {
     font-weight: 600;

@@ -105,11 +105,11 @@ Notes: M1 ships with the open M1.4 items above (memory over target, heavy pages,
 
 - [x] Command history with undo and redo (used by every later milestone) *(`edits-edit`; Ctrl Z, Ctrl Y)*
 - [x] Save, Save As, incremental save, safe write through a temporary file *(Ctrl S, Ctrl Shift S; changes are appended to the original bytes; encrypted files are rewritten whole by PDFium; asks before closing a tab or the window with unsaved changes)*
-- [ ] Autosave recovery file
+- [x] Autosave recovery file *(written after every change; reopening after a crash offers to restore, only if the file is unchanged)*
 - [x] Highlight, underline, strikethrough, squiggly *(from the text selection, five colours, with appearance streams)*
 - [x] Freehand, line, arrow, rectangle, ellipse *(pen, line, arrow, rectangle, ellipse tools; colour, width, fill)*
-- [ ] Sticky notes and text boxes, with Arabic shaping (`edits-text`: rustybuzz, bidi, font embedding and subsetting)
-- [ ] Stamps and images
+- [x] Sticky notes and text boxes, with Arabic shaping (`edits-text`: rustybuzz, bidi, font embedding and subsetting) *(IBM Plex Sans Arabic, OFL; subset embedded with ToUnicode; double-click to edit)*
+- [x] Stamps and images *(word stamps in Arabic and English; JPEG and PNG pictures, PNG transparency kept)*
 - [x] Select, move, resize, restyle, delete; annotation list panel *(click to select, drag to move, handles to resize, Delete; colour, width, fill, note; Comments tab in the side panel)*
 - [x] Annotations made in other apps display and can be edited *(moved, resized, deleted and given notes keeping their own look; recoloured when edits can draw the kind; links and form fields are left alone)*
 
@@ -119,6 +119,7 @@ Notes so far:
 - Design: edits reads files with its own lazy reader (`edits-bench pdf-check`: all 73 intact corpus files match PDFium) and writes incremental updates itself; PDFium shows file + update, so the screen is what will be saved.
 - Save (`edits-bench save FILE`): 12 ms (0.1 MB), 19 ms (1.4 MB, 2,000 pages), 21 ms (10 MB), 96 ms (107 MB book); 380 ms for 506 MB (copying the file). An edit shows in 1-16 ms. PDFium's own full rewrite takes 252 ms for 10 MB and 12 s for 506 MB.
 - Encrypted files cannot be annotated yet (M10); damaged files only after Save As.
+- Status 2026-11-27: every item is in. Save is 13 ms (0.1 MB), 29 ms (10 MB), 95 ms (107 MB): the ≤ 200 ms target passes for these; a 506 MB file takes 380 ms (copying it). Benchmarks unchanged from M1 (memory still over target, see m1-results.md). UI scenarios: tests/ui/annotate.json, draw.json, tools.json, then restore.json for crash recovery. Remaining for "done when": the owner checks `edits-bench annot-demo` output in Acrobat Reader, Chrome and Edge.
 - Saved files checked with a second, independent renderer (MuPDF, local check only): shapes, ink and arrows draw from edits' appearance streams. Not yet checked in Chrome, Edge and Acrobat Reader.
 
 ## M3: Organize pages (release 0.3)

@@ -1,0 +1,9 @@
+[
+  { "wait": 1200, "log": "[!!document.querySelector('#restore-title'), document.querySelector('#restore-title')?.textContent]", "shot": "restore-1-offer" },
+  {
+    "eval": "[...document.querySelectorAll('.overlay button')].find(b => b.textContent.trim() === 'Restore').click()",
+    "wait": 1200,
+    "log": "[(__viewer.pageAnnots(0) ?? []).map(a => a.kind), !!document.querySelector('.tab .dirty')]",
+    "shot": "restore-2-restored"
+  }
+]

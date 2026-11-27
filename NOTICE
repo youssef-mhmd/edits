@@ -12,5 +12,9 @@ This product includes third-party software:
 - Rust crates and npm packages listed in licenses/third-party.txt, also shown
   in Settings > Third-party software (regenerate with scripts/gen-licenses.mjs).
 
+- IBM Plex Sans Arabic (https://github.com/IBM/plex), SIL Open Font License
+  1.1, copyright 2017 IBM Corp. Bundled for text boxes and stamps; subsets
+  of it are embedded in PDFs edits writes. Licence: licenses/OFL-IBM-Plex.txt.
+
 OCR models (from M5) come from the arabic-ocr project under CC BY-SA 4.0;
 its attribution will be reproduced here when they are added.
