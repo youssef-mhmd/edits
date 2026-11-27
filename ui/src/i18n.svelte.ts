@@ -296,6 +296,10 @@ const en = {
   "flat.ok": "Flatten",
   "flat.body":
     "Every annotation and filled-in field becomes part of the page: other people can no longer change or remove them, and the form can no longer be filled. Links stay. You can undo this until you save.",
+  "win.minimize": "Minimise",
+  "win.maximize": "Maximise",
+  "win.restore": "Restore down",
+  "win.close": "Close",
   "side.comments": "Comments",
   "side.noComments": "This document has no comments.",
   // Updates
@@ -588,6 +592,10 @@ const ar: Record<Key, string> = {
   "flat.ok": "دمج",
   "flat.body":
     "تصبح كل التعليقات والحقول المعبأة جزءًا من الصفحة: لا يستطيع غيرك تغييرها أو حذفها، ولا يمكن تعبئة النموذج بعد ذلك. تبقى الروابط. يمكنك التراجع عن هذا حتى تحفظ.",
+  "win.minimize": "تصغير",
+  "win.maximize": "تكبير",
+  "win.restore": "استعادة الحجم",
+  "win.close": "إغلاق",
   "side.comments": "التعليقات",
   "side.noComments": "لا توجد تعليقات في هذا المستند.",
   "up.available": "الإصدار {version} من edits متاح.",

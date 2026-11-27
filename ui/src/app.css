@@ -38,6 +38,7 @@
   --tab-active: #2c2c31;
   --tab-shadow: rgb(0 0 0 / 0.35);
   --field-bg: #2a2a2f;
+  --close-hover: #c42b1c;
   color-scheme: dark;
 }
 
@@ -73,6 +74,7 @@
   --tab-active: #ffffff;
   --tab-shadow: rgb(0 0 0 / 0.12);
   --field-bg: #ececf1;
+  --close-hover: #c42b1c;
   color-scheme: light;
 }
 

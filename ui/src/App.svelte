@@ -182,6 +182,8 @@
   // Set while asking whether to save a document before it closes.
   let unsavedPrompt: { tab: Tab; resolve: (r: "save" | "discard" | "cancel") => void } | null = $state(null);
   let settingsOpen = $state(false);
+  const appWindow = getCurrentWindow();
+  let maximized = $state(false);
   // Signatures kept on this computer (PNG data URLs) and the one being placed.
   let signatures: string[] = $state.raw([]);
   let signature: string | null = $state(null);
@@ -1104,6 +1106,14 @@
       }
     })();
 
+    // The maximise button shows restore while maximised.
+    const syncMax = () =>
+      void appWindow
+        .isMaximized()
+        .then((m) => (maximized = m))
+        .catch(() => {});
+    syncMax();
+    const unlistenResize = appWindow.onResized(syncMax);
     const unlistenDrop = getCurrentWebview().onDragDropEvent((e) => {
       if (e.payload.type === "drop") {
         const paths = e.payload.paths;
@@ -1151,6 +1161,7 @@
     });
     return () => {
       void unlistenDrop.then((f) => f());
+      void unlistenResize.then((f) => f());
       void unlistenFiles.then((f) => f());
       void unlistenClose.then((f) => f());
     };
@@ -1160,8 +1171,10 @@
 <svelte:window onkeydown={onKey} />
 
 <div class="app">
-  {#if tabs.length}
-    <div class="tabbar" role="tablist" aria-label={t("app.documents")}>
+  <!-- The window's own title bar: tabs, then space to drag the window, then its buttons. -->
+  <div class="titlebar" data-tauri-drag-region>
+    {#if !tabs.length}<span class="app-name" data-tauri-drag-region>edits</span>{/if}
+    <div class="tabbar" role="tablist" aria-label={t("app.documents")} data-tauri-drag-region>
       {#each tabs as tab (tab.id)}
         <div
           class="tab"
@@ -1189,11 +1202,41 @@
           </button>
         </div>
       {/each}
-      <button class="tab-new" onclick={openDialog} title={t("app.openTitle")} aria-label={t("app.openPdf")}>
-        +
+      {#if tabs.length}
+        <button class="tab-new" onclick={openDialog} title={t("app.openTitle")} aria-label={t("app.openPdf")}>
+          +
+        </button>
+      {/if}
+    </div>
+    <span class="drag" data-tauri-drag-region></span>
+    <div class="winctl">
+      <button
+        tabindex="-1"
+        aria-label={t("win.minimize")}
+        title={t("win.minimize")}
+        onclick={() => void appWindow.minimize()}
+      >
+        &#xE921;
+      </button>
+      <button
+        tabindex="-1"
+        aria-label={maximized ? t("win.restore") : t("win.maximize")}
+        title={maximized ? t("win.restore") : t("win.maximize")}
+        onclick={() => void appWindow.toggleMaximize()}
+      >
+        {String.fromCharCode(maximized ? 0xe923 : 0xe922)}
+      </button>
+      <button
+        class="close"
+        tabindex="-1"
+        aria-label={t("win.close")}
+        title={t("win.close")}
+        onclick={() => void appWindow.close()}
+      >
+        &#xE8BB;
       </button>
     </div>
-  {/if}
+  </div>
   <header>
     {#if viewer}
       <button
@@ -1808,16 +1851,55 @@
     flex-direction: column;
     height: 100%;
   }
-  /* The tabs and the toolbars are one surface: tabs are pills on it. */
+  /* The title bar, tabs and toolbars are one surface: tabs are pills on it. */
+  .titlebar {
+    display: flex;
+    align-items: stretch;
+    height: 40px;
+    background: var(--bar);
+    flex: none;
+    user-select: none;
+  }
+  .app-name {
+    align-self: center;
+    padding: 0 14px;
+    font-weight: 600;
+    color: var(--muted);
+  }
   .tabbar {
     display: flex;
     align-items: center;
     gap: 4px;
-    height: 38px;
+    min-width: 0;
     padding: 4px 8px 0;
-    background: var(--bar);
     overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .drag {
+    flex: 1;
+    min-width: 40px;
+  }
+  .winctl {
+    display: flex;
     flex: none;
+  }
+  .winctl button {
+    width: 46px;
+    height: 100%;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--text);
+    font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets";
+    font-size: 10px;
+    padding: 0;
+  }
+  .winctl button:hover {
+    background: var(--control-hover);
+  }
+  .winctl button.close:hover {
+    background: var(--close-hover);
+    color: var(--on-accent);
   }
   .tab {
     display: flex;
