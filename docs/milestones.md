@@ -160,7 +160,8 @@ Notes:
 - `edits-bench forms-check [DIR] [KEEP]`: fills every field of every corpus form (Arabic and Latin text, ticks, last radio button, first choice), saves a copy, reads it back (values must match), renders every page in PDFium, then flattens and checks again. All 11 forms pass; a second, independent reader agrees on the values. Filling 199 fields of the 1040 takes 0.8 s in all (about 4 ms each).
 - UI: `tests/ui/forms.json` (W-9: type Arabic, Tab, tick, undo, redo, save), `tests/ui/sign.json` (tick, cross, drawn signature, flatten, save), `tests/ui/password.json` (now also annotates and saves a password-protected file).
 - Benchmarks: no change from 0.3 when built and measured alternately on the same day (10 MB file: first page 530 ms vs 537–545 ms; zoom p95 56 ms vs 62–73 ms). Memory still over target as before.
-- Owner check: the files in `edits-forms-sample` on the Desktop in Acrobat Reader.
+- Owner check done 2026-11-27: the filled, protected, flattened and signed samples show correctly in Acrobat Reader. M4 is complete.
+- Also in 0.4: the window draws its own title bar (tabs beside the window buttons, as in Windows Terminal) and the toolbars are flat.
 
 ## M5: OCR and PDFs from scans (release 0.5)
 
