@@ -569,11 +569,28 @@ impl Session {
                     }
                 }
                 PageSrc::Base(i) => {
+                    // A copy of a page: its comments come as copied entries;
+                    // its links are copied here.
                     let r = *base_pages.get(*i as usize).ok_or(PdfError::Damaged(format!("no page {i}")))?;
                     let mut d = page_dict(&self.base, r)?;
+                    let annots = match d.get(b"Annots") {
+                        Some(a) => self.base.resolve(a)?.as_array().map(<[Obj]>::to_vec).unwrap_or_default(),
+                        None => Vec::new(),
+                    };
                     d.remove(b"Annots");
                     d.remove(b"StructParents");
-                    (out.reserve(), d, Vec::new(), true)
+                    let me = out.reserve();
+                    let mut links = Vec::new();
+                    for a in annots {
+                        let Ok(Obj::Dict(mut l)) = self.base.resolve(&a) else { continue };
+                        if l.name(b"Subtype") != Some(b"Link") {
+                            continue;
+                        }
+                        l.set(b"P", Obj::Ref(me));
+                        l.remove(b"StructParent");
+                        links.push(Obj::Ref(out.add(Obj::Dict(l))));
+                    }
+                    (me, d, links, true)
                 }
                 PageSrc::Blank { w, h } => {
                     let mut d = Dict::default();
@@ -723,6 +740,18 @@ impl Session {
                 }
             } else {
                 self.retarget_outline(order, &base_pages, &page_refs, &mut out)?;
+                // Page labels are given by position: after pages move they
+                // would name the wrong pages, so readers number pages plainly.
+                let moved = order.len() != base_pages.len()
+                    || order.iter().enumerate().any(|(i, s)| s.key != i as u32 || !s.owner());
+                if moved
+                    && let (Some(cr), Some(c)) = (catalog_ref, catalog.as_dict())
+                    && c.get(b"PageLabels").is_some()
+                {
+                    let mut c = c.clone();
+                    c.remove(b"PageLabels");
+                    out.objects.push((cr, Obj::Dict(c)));
+                }
             }
         }
         Ok((out.objects, assigned))
@@ -863,9 +892,13 @@ mod tests {
         let mark = |i: u32| 6 + 3 * i;
         let mid = [4 + 3 * n, 5 + 3 * n];
         let annot = 6 + 3 * n;
+        let link = 7 + 3 * n;
         let half = n.div_ceil(2);
         let mut objs: Vec<(u32, String)> = Vec::new();
-        objs.push((1, "<< /Type /Catalog /Pages 2 0 R /Outlines 3 0 R >>".into()));
+        objs.push((
+            1,
+            "<< /Type /Catalog /Pages 2 0 R /Outlines 3 0 R /PageLabels << /Nums [0 << /S /r >>] >> >>".into(),
+        ));
         objs.push((
             2,
             format!(
@@ -876,7 +909,11 @@ mod tests {
         objs.push((3, format!("<< /Type /Outlines /First {} 0 R /Last {} 0 R /Count {n} >>", mark(0), mark(n - 1))));
         for i in 0..n {
             let parent = if i < half { mid[0] } else { mid[1] };
-            let annots = if i == 1 { format!(" /Annots [{annot} 0 R]") } else { String::new() };
+            let annots = match i {
+                0 => format!(" /Annots [{link} 0 R]"),
+                1 => format!(" /Annots [{annot} 0 R]"),
+                _ => String::new(),
+            };
             objs.push((
                 page(i),
                 format!(
@@ -902,6 +939,14 @@ mod tests {
         objs.push((
             annot,
             format!("<< /Type /Annot /Subtype /Square /Rect [10 10 50 50] /C [1 0 0] /P {} 0 R >>", page(1)),
+        ));
+        objs.push((
+            link,
+            format!(
+                "<< /Type /Annot /Subtype /Link /Rect [0 0 20 20] /P {} 0 R /Dest [{} 0 R /Fit] >>",
+                page(0),
+                page(2)
+            ),
         ));
         objs.sort_by_key(|o| o.0);
         let mut b = b"%PDF-1.7\n".to_vec();
@@ -1104,6 +1149,67 @@ mod tests {
         s.save(&path).unwrap();
         assert_eq!(widths(&seen_bytes(std::fs::read(&path).unwrap())), [300, 300, 100, 102, 101, 101, 842]);
         assert_eq!(s.page_count().unwrap(), 7);
+    }
+
+    #[test]
+    fn copies_keep_links_and_reordering_drops_page_labels() {
+        let path = temp("links.pdf", &pages_pdf(3));
+        let mut s = Session::open(&path).unwrap();
+        let catalog = |s: &Session| {
+            let mut bytes = std::fs::read(s.path()).unwrap();
+            if let Some(t) = s.tail() {
+                bytes.extend_from_slice(&t);
+            }
+            let f = PdfFile::open(bytes).unwrap();
+            let c = f.resolve(f.trailer.get(b"Root").unwrap()).unwrap().as_dict().cloned().unwrap();
+            (f, c)
+        };
+        s.rotate_pages(&[2], 1).unwrap();
+        assert!(catalog(&s).1.get(b"PageLabels").is_some(), "turning a page keeps labels");
+        s.duplicate_pages(&[0]).unwrap();
+        let (f, c) = catalog(&s);
+        assert!(c.get(b"PageLabels").is_none());
+        let pages = f.pages().unwrap();
+        let link_of = |i: usize| {
+            let (_, _, annots) = f.page_annots(i as u32).unwrap();
+            let l = f.resolve(&annots[0]).unwrap();
+            let l = l.as_dict().unwrap();
+            assert_eq!(l.get(b"P").and_then(Obj::as_ref), Some(pages[i]));
+            l.get(b"Dest").and_then(Obj::as_array).unwrap()[0].as_ref()
+        };
+        assert_eq!(link_of(0), Some(pages[3]));
+        assert_eq!(link_of(1), Some(pages[3]), "the copy links to the same page");
+    }
+
+    #[test]
+    fn numbers_and_watermarks_are_drawn_on_top() {
+        let path = temp("numbers.pdf", &pages_pdf(3));
+        let mut s = Session::open(&path).unwrap();
+        s.rotate_pages(&[1], 1).unwrap();
+        let mut d: Decor = serde_json::from_str("{}").unwrap();
+        d.footer[1] = "صفحة {n} من {total}".into();
+        d.watermark = "DRAFT".into();
+        s.decorate_pages(&[0, 1, 2], d).unwrap();
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes.extend_from_slice(&s.tail().unwrap());
+        let f = PdfFile::open(bytes).unwrap();
+        let pages = f.pages().unwrap();
+        let d = page_dict(&f, pages[1]).unwrap();
+        let contents = d.get(b"Contents").and_then(Obj::as_array).unwrap().to_vec();
+        assert_eq!(contents.len(), 3, "q, the page, then the additions");
+        let Obj::Stream(_, first) = f.resolve(&contents[0]).unwrap() else { panic!() };
+        assert_eq!(first, b"q\n");
+        let Obj::Stream(_, last) = f.resolve(&contents[2]).unwrap() else { panic!() };
+        let last = String::from_utf8(last).unwrap();
+        assert!(last.starts_with("Q\nq\n") && last.contains("/EditsF0") && last.contains("/EditsGS0 gs"));
+        let res = d.get(b"Resources").and_then(Obj::as_dict).unwrap();
+        assert!(res.get(b"Font").and_then(Obj::as_dict).unwrap().get(b"EditsF0").is_some());
+        assert!(res.get(b"ProcSet").is_some(), "the page's own resources are kept");
+        // Taken off again before saving: no trace of them left.
+        s.undecorate_pages(&[0, 1, 2]).unwrap();
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes.extend_from_slice(&s.tail().unwrap());
+        assert!(!bytes.windows(7).any(|w| w == b"EditsF0"));
     }
 
     #[test]

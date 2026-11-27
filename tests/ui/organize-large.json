@@ -1,0 +1,37 @@
+[
+  {
+    "eval": "window.__gaps = []; window.__watch = () => { let last = performance.now(); const tick = (t) => { window.__gaps.push(t - last); last = t; window.__raf = requestAnimationFrame(tick); }; window.__raf = requestAnimationFrame(tick); }; window.__worst = () => { const g = window.__gaps; window.__gaps = []; return Math.round(Math.max(0, ...g)); }; window.__hbtn = (label) => [...document.querySelectorAll('header button')].find(b => b.textContent.trim() === label); window.__dragTo = (from, to, after) => { const dt = new DataTransfer(); const a = document.querySelector(`.cell[data-page=\"${from}\"]`); const b = document.querySelector(`.cell[data-page=\"${to}\"]`); const r = b.getBoundingClientRect(); a.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt })); b.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt, clientX: after ? r.right - 5 : r.left + 5, clientY: r.top + 20 })); b.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt })); }; window.__t0 = 0; window.__mark = () => { window.__t0 = performance.now(); }; window.__since = () => Math.round(performance.now() - window.__t0); window.__waitCount = (n) => new Promise((res) => { const t0 = performance.now(); const f = () => (document.querySelectorAll('.cell').length === n && performance.now() - t0 > 50) || performance.now() - t0 > 20000 ? res(Math.round(performance.now() - t0)) : setTimeout(f, 10); f(); });",
+    "wait": 1500,
+    "log": "__viewer.pageCount"
+  },
+  { "eval": "__watch(); __mark(); __hbtn('Pages').click()", "wait": 3000, "log": "[document.querySelectorAll('.cell').length, __worst()]", "shot": "large-1-grid" },
+  {
+    "eval": "document.querySelector('.grid').scrollTop = 1e9",
+    "wait": 1500,
+    "log": "[document.querySelectorAll('.cell img').length, __worst()]"
+  },
+  {
+    "eval": "__gaps = []; window.__first = __viewer.info.pages[999]; __mark(); __dragTo(999, 998, false)",
+    "wait": 2500,
+    "log": "[__worst(), __viewer.pageCount, !!document.querySelector('.tab .dirty')]"
+  },
+  {
+    "eval": "document.querySelector('.grid').scrollTop = 0; __gaps = [];",
+    "wait": 800
+  },
+  {
+    "eval": "__gaps = []; document.querySelector('.cell[data-page=\"5\"]').dispatchEvent(new MouseEvent('click', { bubbles: true })); document.querySelector('.cell[data-page=\"9\"]').dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })); __dragTo(5, 0, false)",
+    "wait": 2500,
+    "log": "[__worst(), document.querySelector('.obar .count').textContent.trim()]",
+    "shot": "large-2-moved"
+  },
+  {
+    "key": "s",
+    "code": "KeyS",
+    "ctrl": true,
+    "vk": 83,
+    "eval": "__gaps = []; __mark();",
+    "wait": 6000,
+    "log": "[__worst(), !!document.querySelector('.tab .dirty'), document.querySelector('.toast')?.textContent ?? 'no error']"
+  }
+]
