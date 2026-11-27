@@ -37,6 +37,9 @@ target/release/edits-bench text-check        # page text against tests/text (rea
 target/release/edits-bench search FILE QUERY # search timing, before and after indexing
 target/release/edits-bench pages-check       # move, turn, copy, delete, insert and save pages of every corpus file
 target/release/edits-bench pages-demo SRC OUT # a sample of page changes, numbers and headers, for other readers
+target/release/edits-bench forms-check [DIR] [KEEP]  # fill, save, read back and flatten every corpus form
+target/release/edits-bench fields FILE       # a document's form fields as edits reads them
+target/release/edits-bench object FILE NUM   # one object as edits' reader sees it (decrypted)
 node scripts/ui-drive.mjs FILE tests/ui/navigation.json OUTDIR   # drive the real app, log state, take screenshots
 powershell -File tests/close.ps1             # closing the window ends the app (no file, file, indexing, searching)
 ```
