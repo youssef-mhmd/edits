@@ -1,6 +1,6 @@
 # Release notes
 
-## 0.1.0 (not yet published)
+## 0.1.0 (2026-11-27)
 
 The first release: a fast PDF reader for Windows, in English and Arabic.
 

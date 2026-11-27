@@ -96,8 +96,10 @@ Notes: results and what was tried in [m1-results.md](m1-results.md). Still faili
 - [x] Print *(Ctrl P: all, current page or a range, 150 or 300 dpi, then the WebView2 print dialog)*
 - [x] Light and dark theme; settings *(theme follows Windows by default; Ctrl ,)*
 - [x] English and Arabic interface with mirrored layout *(page view keeps left-to-right geometry)*
-- [ ] Windows installer and auto-update *(signed NSIS installer, 6.1 MB, English and Arabic; updater wired and release workflow written. Not tested end to end until a release is published on github.com/youssef-mhmd/edits)*
-- [ ] Release 0.1 *(release notes in [release-notes.md](release-notes.md); version 0.1.0; not published)*
+- [x] Windows installer and auto-update *(signed NSIS installer, 6.4 MB, English and Arabic; updater reads latest.json from GitHub releases. The update itself is first exercised when 0.2 is published)*
+- [x] Release 0.1 *(published 2026-11-27: https://github.com/youssef-mhmd/edits/releases/tag/v0.1.0; notes in [release-notes.md](release-notes.md))*
+
+Notes: M1 ships with the open M1.4 items above (memory over target, heavy pages, reference machine); the owner chose to release and continue with M2.
 
 ## M2: Annotate and mark up (release 0.2)
 
