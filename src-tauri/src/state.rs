@@ -8,12 +8,17 @@ use tauri::Manager;
 /// Larger than any sane state; protects against a runaway writer.
 const MAX_STATE_BYTES: usize = 1_000_000;
 
+/// The app's data folder. Tests point this elsewhere (EDITS_STATE_DIR) so
+/// they never touch the user's recent files or recovery files.
+pub fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    match std::env::var_os("EDITS_STATE_DIR") {
+        Some(d) => Ok(PathBuf::from(d)),
+        None => app.path().app_data_dir().map_err(|e| e.to_string()),
+    }
+}
+
 fn state_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    // Tests point this elsewhere so they never touch the user's recent files.
-    let dir = match std::env::var_os("EDITS_STATE_DIR") {
-        Some(d) => PathBuf::from(d),
-        None => app.path().app_data_dir().map_err(|e| e.to_string())?,
-    };
+    let dir = data_dir(app)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.join("state.json"))
 }

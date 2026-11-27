@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 edits-core.workspace = true
+edits-edit.workspace = true
 lopdf = { workspace = true, default-features = false }
 serde.workspace = true
 serde_json.workspace = true

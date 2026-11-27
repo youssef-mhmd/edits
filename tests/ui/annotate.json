@@ -1,0 +1,66 @@
+[
+  {
+    "eval": "window.__pt = async (page, i, side) => { const v = __viewer; const t = await v.loadText(page); const b = t.boxes; const box = v.boxes.get(page); const r = v.scroller.getBoundingClientRect(); const w = box.pw / v.dpr, h = box.ph / v.dpr; const x = side === 'l' ? b[4*i] + 0.001 : b[4*i+2] - 0.001; const y = (b[4*i+1] + b[4*i+3]) / 2; return [r.left + box.x + x * w - v.scroller.scrollLeft, r.top + box.y + y * h - v.scroller.scrollTop]; }; window.__btn = (label) => [...document.querySelectorAll('header button, .ctxbar button')].find(b => b.getAttribute('aria-label') === label); window.__yellow = () => { const c = document.querySelector('.page canvas.tile'); return !!c; }",
+    "wait": 300,
+    "log": "[__btn('Highlight').disabled, __btn('Undo').disabled]"
+  },
+  {
+    "dblclick": "__pt(0, 7, 'r')",
+    "wait": 400,
+    "log": "[__viewer.hasSelection, __btn('Highlight').disabled]"
+  },
+  {
+    "eval": "__btn('Highlight').click()",
+    "wait": 800,
+    "log": "[__viewer.hasSelection, __btn('Undo').disabled, !!document.querySelector('.tab .dirty')]",
+    "shot": "annotate-1-highlight"
+  },
+  {
+    "key": "z",
+    "code": "KeyZ",
+    "ctrl": true,
+    "vk": 90,
+    "wait": 800,
+    "log": "[__btn('Undo').disabled, __btn('Redo').disabled, !!document.querySelector('.tab .dirty')]",
+    "shot": "annotate-2-undone"
+  },
+  {
+    "key": "y",
+    "code": "KeyY",
+    "ctrl": true,
+    "vk": 89,
+    "wait": 800,
+    "log": "[__btn('Undo').disabled, !!document.querySelector('.tab .dirty')]"
+  },
+  {
+    "key": "s",
+    "code": "KeyS",
+    "ctrl": true,
+    "vk": 83,
+    "wait": 1500,
+    "log": "[!!document.querySelector('.tab .dirty'), document.querySelector('.toast')?.textContent ?? 'no error']",
+    "shot": "annotate-3-saved"
+  },
+  {
+    "key": "z",
+    "code": "KeyZ",
+    "ctrl": true,
+    "vk": 90,
+    "wait": 800,
+    "log": "[!!document.querySelector('.tab .dirty'), __btn('Redo').disabled]"
+  },
+  {
+    "key": "w",
+    "code": "KeyW",
+    "ctrl": true,
+    "vk": 87,
+    "wait": 500,
+    "log": "[!!document.querySelector('#unsaved-title'), document.querySelector('#unsaved-title')?.textContent]",
+    "shot": "annotate-4-unsaved-prompt"
+  },
+  {
+    "eval": "[...document.querySelectorAll('.overlay button')].find(b => b.textContent.trim() === 'Cancel').click()",
+    "wait": 300,
+    "log": "[!!document.querySelector('#unsaved-title'), document.querySelectorAll('.tab').length]"
+  }
+]

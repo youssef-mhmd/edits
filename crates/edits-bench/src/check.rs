@@ -1,7 +1,7 @@
 //! Corpus checks: every file opens and renders without a crash or hang, and
 //! lopdf can load, decrypt, clean and re-save it.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -180,4 +180,87 @@ pub fn lopdf_all(dir: &Path) -> Res<bool> {
     }
     println!("\n{ok} of {} files round-tripped", files.len());
     Ok(true)
+}
+
+/// Checks edits' own PDF reader (edits-edit `pdf`) on every corpus file:
+/// page count and annotations against PDFium, and that a file with an
+/// update appended by edits opens in PDFium with the same pages.
+/// `edits-bench pdf-check [DIR]`
+pub fn pdf_all(dir: &Path) -> Res<bool> {
+    use edits_edit::pdf::{FileSource, Obj, PdfFile, write};
+    let engine = Engine::start()?;
+    let tmp = std::env::temp_dir().join(format!("edits-pdf-check-{}.pdf", std::process::id()));
+    let mut ok = true;
+    for path in pdf_files(dir)? {
+        let name = path.strip_prefix(dir).unwrap_or(&path).display().to_string();
+        let t = Instant::now();
+        let ours = FileSource::open(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|s| PdfFile::open(s).map_err(|e| e.to_string()));
+        let theirs = engine.open(&path, password_for(&path));
+        match (ours, theirs) {
+            (Err(e), Err(_)) => println!("BOTH-REFUSE {name}: {e}"),
+            (Err(e), Ok(info)) => {
+                println!("OURS-FAIL  {name}: {e} (PDFium: {} pages)", info.page_count);
+                engine.close(info.doc);
+            }
+            (Ok(_), Err(e)) => println!("PDFIUM-FAIL {name}: {e}"),
+            (Ok(f), Ok(info)) => {
+                let open_ms = t.elapsed().as_secs_f64() * 1000.0;
+                let pages = f.pages().map(|p| p.len() as u32).unwrap_or(0);
+                let mut annots = 0;
+                let mut problems = Vec::new();
+                for i in 0..pages {
+                    match f.page_annots(i) {
+                        Ok((_, _, a)) => {
+                            for o in &a {
+                                if let Err(e) = f.resolve(o) {
+                                    problems.push(format!("page {i}: {e}"));
+                                }
+                            }
+                            annots += a.len();
+                        }
+                        Err(e) => problems.push(format!("page {i}: {e}")),
+                    }
+                }
+                engine.close(info.doc);
+                let mut status = if pages == info.page_count { "OK" } else { "PAGES-DIFFER" };
+                // Round trip: rewrite page 1 unchanged as an update; PDFium must read it.
+                if f.is_encrypted() {
+                    status = if status == "OK" { "OK-ENCRYPTED" } else { status };
+                } else if pages > 0 {
+                    let (r, d, _) = f.page_annots(0).map_err(|e| e.to_string())?;
+                    let tail = write::update(&f, &[(r, Obj::Dict(d))]);
+                    std::fs::copy(&path, &tmp)?;
+                    std::fs::OpenOptions::new().append(true).open(&tmp)?.write_all(&tail)?;
+                    match engine.open(&tmp, None) {
+                        Ok(i2) => {
+                            if i2.page_count != info.page_count {
+                                status = "UPDATE-PAGES-DIFFER";
+                            }
+                            engine.close(i2.doc);
+                        }
+                        Err(e) => {
+                            status = "UPDATE-BREAKS";
+                            problems.push(e.to_string());
+                        }
+                    }
+                }
+                if status != "OK" && status != "OK-ENCRYPTED" {
+                    ok = false;
+                }
+                println!(
+                    "{status:<11} {name}: {pages} pages (PDFium {}), {annots} annotations, open {open_ms:.1} ms{}",
+                    info.page_count,
+                    if problems.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", {} unreadable: {}", problems.len(), problems[0])
+                    }
+                );
+            }
+        }
+    }
+    let _ = std::fs::remove_file(&tmp);
+    Ok(ok)
 }

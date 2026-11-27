@@ -193,8 +193,9 @@ pub(crate) struct Worker {
     pub child: Arc<Mutex<Child>>,
     input: BufWriter<ChildStdin>,
     output: BufReader<ChildStdout>,
-    /// Documents this worker has open.
-    pub open: std::collections::HashSet<DocId>,
+    /// Documents this worker has open, with the generation of each
+    /// (a document reopened after saving has a new generation).
+    pub open: std::collections::HashMap<DocId, u64>,
 }
 
 impl Worker {
@@ -226,6 +227,7 @@ impl Worker {
     pub fn open(
         &mut self,
         doc: DocId,
+        generation: u64,
         path: &Path,
         password: Option<&str>,
         stamp: Option<Stamp>,
@@ -234,7 +236,7 @@ impl Worker {
             Request::Open { doc, path: path.into(), password: password.map(Into::into), stamp: stamp_wire(stamp) };
         Ok(match self.request(&req)? {
             Reply::Ok => {
-                self.open.insert(doc);
+                self.open.insert(doc, generation);
                 Ok(())
             }
             Reply::Err(e) => Err(e),

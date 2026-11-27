@@ -12,11 +12,14 @@
 // many device pixels as its tiles, so tiles are never resampled (no blur).
 
 import {
+  annotsPage,
   Cancelled,
   pageLinks,
   pageText,
   setViewport,
+  type AnnotView,
   type DocInfo,
+  type NewAnnot,
   type Link,
   type RenderSpec,
   type Target,
@@ -49,6 +52,40 @@ export const MIN_ZOOM = 0.1;
 export const MAX_ZOOM = 8;
 
 export type ViewMode = "continuous" | "single" | "two-page";
+
+/** What a mouse press on a page does: select text and annotations, or draw. */
+export type Tool =
+  "select" | "ink" | "line" | "arrow" | "square" | "circle" | "note" | "text" | "stamp" | "image";
+
+/** Tools that place something where the page is clicked (or a box is dragged). */
+const PLACING: Tool[] = ["note", "text", "stamp", "image"];
+
+/** Carries out annotation edits (the app does the IPC and the redrawing). */
+export interface Editor {
+  add(n: Omit<NewAnnot, "color" | "author">): Promise<void>;
+  move(id: number, dx: number, dy: number): Promise<void>;
+  resize(id: number, rect: number[]): Promise<void>;
+  /** A placing tool was used: `rect` is the box dragged, or a point (left = right). */
+  place(tool: Tool, page: number, rect: number[]): void;
+}
+
+/** An annotation being pressed, moved, resized or drawn. */
+type Gesture =
+  | {
+      type: "press";
+      a: AnnotView;
+      fx: number;
+      fy: number;
+      x: number;
+      y: number;
+      at: { page: number; fx: number; fy: number };
+    }
+  | { type: "move"; a: AnnotView; fx: number; fy: number; dx: number; dy: number }
+  | { type: "resize"; a: AnnotView; handle: string; rect: number[] }
+  | { type: "draw"; page: number; tool: Tool; pts: number[][] };
+
+const HANDLE_PX = 7; // half the size of a resize handle, CSS px
+const HIT_PX = 4; // extra reach around an annotation, CSS px
 export type FitMode = "width" | "page" | "none";
 
 /**
@@ -61,6 +98,18 @@ class CanvasCache {
   private map = new Map<string, HTMLCanvasElement>();
   private bytes = 0;
   constructor(private budget: number) {}
+
+  /** Drops `key`; frees its canvas unless it is `keep`. */
+  delete(key: string, keep: HTMLCanvasElement | null = null) {
+    const c = this.map.get(key);
+    if (!c) return;
+    this.map.delete(key);
+    this.bytes -= c.width * c.height * 4;
+    if (c !== keep) {
+      c.remove();
+      c.width = c.height = 0;
+    }
+  }
 
   get(key: string): HTMLCanvasElement | undefined {
     const c = this.map.get(key);
@@ -109,6 +158,12 @@ class BlobStore {
     return this.map.size;
   }
 
+  delete(page: number) {
+    const b = this.map.get(page);
+    if (b) this.bytes -= b.size;
+    this.map.delete(page);
+  }
+
   get(page: number): Blob | undefined {
     const b = this.map.get(page);
     if (b) {
@@ -135,11 +190,15 @@ class BlobStore {
 interface PageView {
   el: HTMLDivElement;
   preview: HTMLCanvasElement | null;
+  /** The preview from before the page changed, shown until the new one arrives. */
+  oldPreview: HTMLCanvasElement | null;
   tiles: Map<string, HTMLCanvasElement>; // key -> canvas attached to el
   error: HTMLDivElement | null;
   links: HTMLElement[];
   /** Selection and search highlights, drawn over the tiles. */
   marks: HTMLDivElement;
+  /** Annotation selection and drawing, in unrotated page space (turned with CSS). */
+  alayer: HTMLDivElement;
 }
 
 /** A caret: page index and position between characters of its text. */
@@ -219,6 +278,8 @@ export class Viewer {
   private errors = new Map<number, string>();
   /** Pages whose tiles are slow to render; they get larger tiles. */
   private slowPages = new Set<number>();
+  /** Bumped when a page's content changes (annotations); older renders are stale. */
+  private pageVer = new Map<number, number>();
   private frame = 0;
   private lastKeep = "";
   private _zoom = 1;
@@ -252,6 +313,24 @@ export class Viewer {
   onUpdate: () => void = () => {};
   /** Called when a tile arrives. */
   onTile: (t: TileData) => void = () => {};
+  /** Called when text is selected or the selection is cleared. */
+  onSelection: (has: boolean) => void = () => {};
+  /** Called when an annotation is selected, or with null when none is. */
+  onAnnotSelect: (a: AnnotView | null) => void = () => {};
+  /** Called when an annotation is double-clicked (to edit its text). */
+  onAnnotOpen: (a: AnnotView) => void = () => {};
+  /** Does annotation edits; null while editing is not possible. */
+  editor: Editor | null = null;
+  private _tool: Tool = "select";
+  /** Stroke width (points), fill and opacity for drawing tools. */
+  drawStyle: { width: number; fill: number[] | null; color: number[] } = {
+    width: 2,
+    fill: null,
+    color: [0.9, 0.1, 0.1],
+  };
+  private annots = new Map<number, AnnotView[] | "loading">();
+  private selAnnot: AnnotView | null = null;
+  private gesture: Gesture | null = null;
 
   constructor(
     host: HTMLElement,
@@ -413,7 +492,7 @@ export class Viewer {
       const list = this.blobWaiters.get(i) ?? [];
       list.push(resolve);
       this.blobWaiters.set(i, list);
-      const key = `p${i}`;
+      const key = this.pk(i);
       if (!this.inflight.has(key) && !this.errors.has(i)) {
         this.request(key, this.previewSpec(i), PRIO_PREVIEW_NEAR, (c) => {
           const show = this.views.has(i) && !this.views.get(i)!.preview;
@@ -605,6 +684,7 @@ export class Viewer {
 
   private place(i: number, v: PageView) {
     this.placeLinks(i, v);
+    this.orientLayer(i, v);
     this.drawMarks(i);
     const b = this.boxes.get(i)!;
     const st = v.el.style;
@@ -760,7 +840,52 @@ export class Viewer {
     return specs;
   }
 
-  private key = (s: RenderSpec) => `${s.page}/${s.page_w}/${s.rotation}/${s.x}/${s.y}/${s.w}`;
+  private key = (s: RenderSpec) =>
+    `${s.page}/${s.page_w}/${s.rotation}/${s.x}/${s.y}/${s.w}/${this.ver(s.page)}`;
+
+  private ver(i: number): number {
+    return this.pageVer.get(i) ?? 0;
+  }
+
+  /** In-flight key for page `i`'s preview at its current version. */
+  private pk(i: number): string {
+    return `p${i}@${this.ver(i)}`;
+  }
+
+  /**
+   * Draws pages again after their content changed (annotations added,
+   * removed, undone). What is on screen stays until the new renders arrive.
+   */
+  invalidatePages(pages: number[]) {
+    for (const i of pages) {
+      this.pageVer.set(i, this.ver(i) + 1);
+      this.previewBlobs.delete(i);
+      this.errors.delete(i);
+      const v = this.views.get(i);
+      if (v?.preview) {
+        v.oldPreview?.remove();
+        v.oldPreview = v.preview;
+        v.preview = null;
+      }
+      this.previewCanvases.delete(`p${i}`, v?.oldPreview ?? null);
+    }
+    this.lastKeep = "";
+    this.schedule();
+  }
+
+  /** The selected text's areas, page by page, in page fractions (left, top, right, bottom). */
+  async selectionRects(): Promise<{ page: number; rects: number[][] }[]> {
+    const o = this.ordered();
+    if (!o || !this.hasSelection) return [];
+    const [a, b] = o;
+    const out: { page: number; rects: number[][] }[] = [];
+    for (let p = a.page; p <= b.page; p++) {
+      const t = await this.loadText(p);
+      const rects = rangeRects(t, p === a.page ? a.i : 0, p === b.page ? b.i : t.text.length);
+      if (rects.length) out.push({ page: p, rects });
+    }
+    return out;
+  }
 
   /** Previews are rendered unrotated; the canvas is turned to fit the page. */
   private previewSpec(i: number): RenderSpec {
@@ -819,13 +944,26 @@ export class Viewer {
         const marks = document.createElement("div");
         marks.className = "marks";
         el.append(marks);
-        const v: PageView = { el, preview: null, tiles: new Map(), error: null, links: [], marks };
+        const alayer = document.createElement("div");
+        alayer.className = "alayer";
+        el.append(alayer);
+        const v: PageView = {
+          el,
+          preview: null,
+          oldPreview: null,
+          tiles: new Map(),
+          error: null,
+          links: [],
+          marks,
+          alayer,
+        };
         this.views.set(i, v);
         this.place(i, v);
         this.content.append(el);
         const err = this.errors.get(i);
         if (err) this.showError(v, err);
         this.loadLinks(i);
+        this.loadAnnots(i);
         if (this.pageHasMarks(i)) void this.loadText(i).then(() => this.drawMarks(i));
       }
     }
@@ -885,8 +1023,8 @@ export class Viewer {
 
   /** Shows page `i`'s preview from memory, from its compressed copy, or renders it. */
   private loadPreview(i: number, prio: number) {
-    const key = `p${i}`;
-    const cached = this.previewCanvases.get(key);
+    const key = this.pk(i);
+    const cached = this.previewCanvases.get(`p${i}`);
     if (cached) {
       this.attachPreviewTo(i, cached);
       return;
@@ -954,7 +1092,7 @@ export class Viewer {
     for (let d = 0; d < n && this.backgroundInflight < BACKGROUND_INFLIGHT; d++) {
       for (const i of d === 0 ? [center] : [center + d, center - d]) {
         if (i < 0 || i >= n || this.backgroundInflight >= BACKGROUND_INFLIGHT) continue;
-        const key = `p${i}`;
+        const key = this.pk(i);
         if (this.previewBlobs.has(i) || this.inflight.has(key) || this.errors.has(i)) continue;
         this.backgroundInflight++;
         this.request(
@@ -976,6 +1114,8 @@ export class Viewer {
     const v = this.views.get(i);
     const b = this.boxes.get(i);
     if (!v || !b || v.preview) return;
+    v.oldPreview?.remove();
+    v.oldPreview = null;
     c.className = "preview";
     v.preview = c;
     this.orientPreview(c, b);
@@ -1063,11 +1203,41 @@ export class Viewer {
   }
 
   private onMouseDown(e: MouseEvent) {
-    if (e.button !== 0 || (e.target as HTMLElement).closest("a.link")) return;
+    if (e.button !== 0) return;
+    if (this._tool === "select" && (e.target as HTMLElement).closest("a.link")) return;
     const at = this.pointToPage(e.clientX, e.clientY);
     if (!at) return;
     e.preventDefault();
     this.scroller.focus();
+    if (this._tool !== "select") {
+      if (!this.editor) return;
+      this.selectAnnot(null);
+      this.gesture = { type: "draw", page: at.page, tool: this._tool, pts: [[at.fx, at.fy]] };
+      this.drawAnnotLayer(at.page);
+      return;
+    }
+    // A resize handle of the selected annotation, then any annotation.
+    const handle = this.handleAt(at);
+    if (handle && this.selAnnot) {
+      this.gesture = { type: "resize", a: this.selAnnot, handle, rect: [...this.selAnnot.rect] };
+      return;
+    }
+    const hit = this.annotAt(at.page, at.fx, at.fy);
+    if (hit && e.detail === 2 && this.selAnnot?.id === hit.id) {
+      this.onAnnotOpen(hit);
+      return;
+    }
+    if (hit && e.detail === 1) {
+      this.selectAnnot(hit);
+      this.clearSelection();
+      this.gesture = { type: "press", a: hit, fx: at.fx, fy: at.fy, x: e.clientX, y: e.clientY, at };
+      return;
+    }
+    this.selectAnnot(null);
+    this.startTextSelection(at, e);
+  }
+
+  private startTextSelection(at: { page: number; fx: number; fy: number }, e: MouseEvent) {
     const clicks = e.detail;
     void this.loadText(at.page).then((t) => {
       const c = this.caretFor(at);
@@ -1084,6 +1254,10 @@ export class Viewer {
   }
 
   private onDrag = (e: MouseEvent) => {
+    if (this.gesture) {
+      this.onGestureDrag(e);
+      return;
+    }
     if (!this.dragging || !this.sel) return;
     // Scroll while dragging past the edges.
     const r = this.scroller.getBoundingClientRect();
@@ -1098,12 +1272,33 @@ export class Viewer {
 
   private onMouseUp = () => {
     this.dragging = false;
+    const g = this.gesture;
+    this.gesture = null;
+    if (g) void this.finishGesture(g);
   };
 
   /** The text cursor over text, so it is clear what can be selected. */
   private onHover(e: MouseEvent) {
-    if (this.dragging) return;
+    if (this.dragging || this.gesture) return;
+    if (this._tool !== "select") {
+      this.scroller.style.cursor = "crosshair";
+      return;
+    }
     const at = this.pointToPage(e.clientX, e.clientY);
+    const handle = at && this.handleAt(at);
+    if (handle) {
+      this.scroller.style.cursor =
+        handle === "n" || handle === "s"
+          ? "ns-resize"
+          : handle === "e" || handle === "w"
+            ? "ew-resize"
+            : "move";
+      return;
+    }
+    if (at && this.annotAt(at.page, at.fx, at.fy)) {
+      this.scroller.style.cursor = "pointer";
+      return;
+    }
     const t = at && this.texts.get(at.page);
     if (at && !t) void this.loadText(at.page);
     this.scroller.style.cursor = t && overText(t, at!.fx, at!.fy) ? "text" : "";
@@ -1118,6 +1313,7 @@ export class Viewer {
       for (let p = Math.min(s.a.page, s.b.page); p <= Math.max(s.a.page, s.b.page); p++) pages.add(p);
     }
     for (const p of pages) if (this.views.has(p)) this.drawMarks(p);
+    this.onSelection(this.hasSelection);
   }
 
   clearSelection() {
@@ -1126,6 +1322,7 @@ export class Viewer {
     if (old)
       for (let p = Math.min(old.a.page, old.b.page); p <= Math.max(old.a.page, old.b.page); p++)
         this.drawMarks(p);
+    this.onSelection(false);
   }
 
   /** Selects all text on page `i`. */
@@ -1238,6 +1435,314 @@ export class Viewer {
     }
   }
 
+  // ----------------------------------------------------------- annotations
+
+  get tool(): Tool {
+    return this._tool;
+  }
+
+  set tool(t: Tool) {
+    this._tool = t;
+    if (t !== "select") this.selectAnnot(null);
+    this.scroller.style.cursor = t === "select" ? "" : "crosshair";
+  }
+
+  get selectedAnnot(): AnnotView | null {
+    return this.selAnnot;
+  }
+
+  /** Selects an annotation (or none) and shows its frame. */
+  selectAnnot(a: AnnotView | null) {
+    const old = this.selAnnot;
+    this.selAnnot = a;
+    if (old) this.drawAnnotLayer(old.page);
+    if (a) this.drawAnnotLayer(a.page);
+    if (old?.id !== a?.id || old?.page !== a?.page) this.onAnnotSelect(a);
+  }
+
+  /** Loads page `i`'s annotations once, for hit-testing and the list. */
+  private loadAnnots(i: number) {
+    if (this.annots.has(i)) return;
+    this.annots.set(i, "loading");
+    annotsPage(this.info.doc, i)
+      .then((a) => this.annots.set(i, a))
+      .catch(() => this.annots.set(i, []))
+      .finally(() => {
+        // Keep the selection on its (possibly changed) annotation.
+        const sel = this.selAnnot;
+        if (sel?.page === i) {
+          const list = this.annots.get(i);
+          const now = Array.isArray(list) ? (list.find((x) => x.id === sel.id) ?? null) : null;
+          this.selAnnot = now;
+          if (!now) this.onAnnotSelect(null);
+          else this.onAnnotSelect(now);
+        }
+        this.drawAnnotLayer(i);
+      });
+  }
+
+  /** Reads the annotations of `pages` again after they changed. */
+  reloadAnnots(pages: number[]) {
+    for (const i of pages) {
+      this.annots.delete(i);
+      if (this.views.has(i)) this.loadAnnots(i);
+    }
+  }
+
+  /** The annotations of page `i` as loaded, or null if not loaded yet. */
+  pageAnnots(i: number): AnnotView[] | null {
+    const a = this.annots.get(i);
+    return Array.isArray(a) ? a : null;
+  }
+
+  /** The topmost annotation at a point of page `page` (unrotated fractions). */
+  private annotAt(page: number, fx: number, fy: number): AnnotView | null {
+    const list = this.annots.get(page);
+    if (!Array.isArray(list)) return null;
+    const p = this.info.pages[page];
+    const tx = HIT_PX / (p.w * this._zoom);
+    const ty = HIT_PX / (p.h * this._zoom);
+    for (let k = list.length - 1; k >= 0; k--) {
+      const a = list[k];
+      const [l, t, r, b] = a.rect;
+      if (fx < l - tx || fx > r + tx || fy < t - ty || fy > b + ty) continue;
+      if (a.kind === "line" && a.line) {
+        // Near the line itself, not just its box.
+        const [x1, y1, x2, y2] = a.line;
+        const sx = p.w,
+          sy = p.h; // to points, so distances are not skewed
+        const vx = (x2 - x1) * sx,
+          vy = (y2 - y1) * sy;
+        const wx = (fx - x1) * sx,
+          wy = (fy - y1) * sy;
+        const len2 = vx * vx + vy * vy || 1;
+        const u = Math.max(0, Math.min(1, (wx * vx + wy * vy) / len2));
+        const d = Math.hypot(wx - u * vx, wy - u * vy);
+        if (d > a.width / 2 + HIT_PX / this._zoom + 2) continue;
+      }
+      return a;
+    }
+    return null;
+  }
+
+  /** Movable and resizable: shapes, lines, ink and other apps' annotations; not text markup. */
+  private movable(a: AnnotView): boolean {
+    return !["highlight", "underline", "strikeout", "squiggly"].includes(a.kind);
+  }
+
+  /** Has resize handles: not text markup, notes (a fixed icon) or other apps' kinds. */
+  private resizable(a: AnnotView): boolean {
+    return this.movable(a) && a.kind !== "other" && a.kind !== "note";
+  }
+
+  /** The resize handle of the selected annotation under a point, if any. */
+  private handleAt(at: { page: number; fx: number; fy: number }): string | null {
+    const a = this.selAnnot;
+    if (!a || a.page !== at.page || !this.resizable(a)) return null;
+    const p = this.info.pages[at.page];
+    const hx = (HANDLE_PX + 2) / (p.w * this._zoom);
+    const hy = (HANDLE_PX + 2) / (p.h * this._zoom);
+    for (const [name, x, y] of this.handles(a.rect)) {
+      if (Math.abs(at.fx - x) <= hx && Math.abs(at.fy - y) <= hy) return name;
+    }
+    return null;
+  }
+
+  private handles(r: number[]): [string, number, number][] {
+    const [l, t, rt, b] = r;
+    const cx = (l + rt) / 2,
+      cy = (t + b) / 2;
+    return [
+      ["nw", l, t],
+      ["n", cx, t],
+      ["ne", rt, t],
+      ["e", rt, cy],
+      ["se", rt, b],
+      ["s", cx, b],
+      ["sw", l, b],
+      ["w", l, cy],
+    ];
+  }
+
+  private onGestureDrag(e: MouseEvent) {
+    const g = this.gesture!;
+    const at = this.pointToPage(e.clientX, e.clientY);
+    if (!at) return;
+    const clamp = (v: number) => Math.max(0, Math.min(1, v));
+    if (g.type === "press") {
+      if (Math.hypot(e.clientX - g.x, e.clientY - g.y) < 4) return;
+      if (this.movable(g.a) && this.editor) {
+        this.gesture = { type: "move", a: g.a, fx: g.fx, fy: g.fy, dx: 0, dy: 0 };
+      } else {
+        // Dragging over text markup selects the text under it.
+        this.gesture = null;
+        this.selectAnnot(null);
+        this.startTextSelection(g.at, e);
+        return;
+      }
+    }
+    const cur = this.gesture!;
+    if (cur.type === "move") {
+      if (at.page !== cur.a.page) return;
+      const [l, t, r, b] = cur.a.rect;
+      // Keep the annotation on the page.
+      cur.dx = Math.max(-l, Math.min(1 - r, at.fx - cur.fx));
+      cur.dy = Math.max(-t, Math.min(1 - b, at.fy - cur.fy));
+      this.drawAnnotLayer(cur.a.page);
+    } else if (cur.type === "resize") {
+      if (at.page !== cur.a.page) return;
+      const r = [...cur.a.rect];
+      const h = cur.handle;
+      if (h.includes("w")) r[0] = Math.min(clamp(at.fx), r[2] - 0.005);
+      if (h.includes("e")) r[2] = Math.max(clamp(at.fx), r[0] + 0.005);
+      if (h.includes("n")) r[1] = Math.min(clamp(at.fy), r[3] - 0.005);
+      if (h.includes("s")) r[3] = Math.max(clamp(at.fy), r[1] + 0.005);
+      cur.rect = r;
+      this.drawAnnotLayer(cur.a.page);
+    } else if (cur.type === "draw") {
+      if (at.page !== cur.page) return;
+      const pt = [clamp(at.fx), clamp(at.fy)];
+      if (cur.tool === "ink") {
+        const last = cur.pts[cur.pts.length - 1];
+        const p = this.info.pages[cur.page];
+        // Skip points closer than half a CSS pixel.
+        if (Math.hypot((pt[0] - last[0]) * p.w, (pt[1] - last[1]) * p.h) * this._zoom >= 0.5)
+          cur.pts.push(pt);
+      } else {
+        cur.pts = [cur.pts[0], pt];
+      }
+      this.drawAnnotLayer(cur.page);
+    }
+  }
+
+  private async finishGesture(g: Gesture) {
+    const ed = this.editor;
+    const page = g.type === "draw" ? g.page : g.a.page;
+    try {
+      if (!ed) return;
+      if (g.type === "move" && (g.dx !== 0 || g.dy !== 0)) {
+        await ed.move(g.a.id, g.dx, g.dy);
+      } else if (g.type === "resize" && g.rect.join() !== g.a.rect.join()) {
+        await ed.resize(g.a.id, g.rect);
+      } else if (g.type === "draw") {
+        const p = this.info.pages[g.page];
+        const [a, b] = [g.pts[0], g.pts[g.pts.length - 1]];
+        const tiny = Math.hypot((b[0] - a[0]) * p.w, (b[1] - a[1]) * p.h) * this._zoom < 3;
+        const { width, fill } = this.drawStyle;
+        if (PLACING.includes(g.tool)) {
+          const rect = tiny
+            ? [a[0], a[1], a[0], a[1]]
+            : [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])];
+          ed.place(g.tool, g.page, rect);
+        } else if (g.tool === "ink") await ed.add({ page: g.page, kind: "ink", ink: [g.pts], width });
+        else if (tiny) return;
+        else if (g.tool === "line" || g.tool === "arrow")
+          await ed.add({ page: g.page, kind: "line", line: [...a, ...b], width, arrow: g.tool === "arrow" });
+        else {
+          const rect = [
+            Math.min(a[0], b[0]),
+            Math.min(a[1], b[1]),
+            Math.max(a[0], b[0]),
+            Math.max(a[1], b[1]),
+          ];
+          await ed.add({ page: g.page, kind: g.tool as "square" | "circle", rect, width, fill });
+        }
+      }
+    } finally {
+      this.drawAnnotLayer(page);
+    }
+  }
+
+  /** Turns the annotation layer like the preview: unrotated page space, rotated with CSS. */
+  private orientLayer(i: number, v: PageView) {
+    const b = this.boxes.get(i);
+    if (!b) return;
+    const w = b.pw / this.dpr;
+    const h = b.ph / this.dpr;
+    const odd = this._rotation % 2 === 1;
+    const st = v.alayer.style;
+    st.width = `${odd ? h : w}px`;
+    st.height = `${odd ? w : h}px`;
+    st.left = `${w / 2}px`;
+    st.top = `${h / 2}px`;
+    st.transform = `translate(-50%, -50%) rotate(${this._rotation * 90}deg)`;
+  }
+
+  /** Draws page `i`'s annotation frame, handles and drawing preview. */
+  private drawAnnotLayer(i: number) {
+    const v = this.views.get(i);
+    if (!v) return;
+    v.alayer.replaceChildren();
+    const g = this.gesture;
+    const pct = (x: number) => `${x * 100}%`;
+    const a = this.selAnnot;
+    if (a && a.page === i) {
+      let r = a.rect;
+      if (g?.type === "move" && g.a.id === a.id) r = [r[0] + g.dx, r[1] + g.dy, r[2] + g.dx, r[3] + g.dy];
+      if (g?.type === "resize" && g.a.id === a.id) r = g.rect;
+      const box = document.createElement("div");
+      box.className = "asel";
+      box.style.left = pct(r[0]);
+      box.style.top = pct(r[1]);
+      box.style.width = pct(r[2] - r[0]);
+      box.style.height = pct(r[3] - r[1]);
+      v.alayer.append(box);
+      if (this.resizable(a)) {
+        for (const [name, x, y] of this.handles(r)) {
+          const hd = document.createElement("div");
+          hd.className = `ahandle ${name}`;
+          hd.style.left = pct(x);
+          hd.style.top = pct(y);
+          v.alayer.append(hd);
+        }
+      }
+    }
+    if (g?.type === "draw" && g.page === i) {
+      const ns = "http://www.w3.org/2000/svg";
+      const svg = document.createElementNS(ns, "svg");
+      svg.setAttribute("viewBox", "0 0 1 1");
+      svg.setAttribute("preserveAspectRatio", "none");
+      svg.classList.add("apreview");
+      const css = `rgb(${this.drawStyle.color.map((c) => Math.round(c * 255)).join(" ")})`;
+      const shape = (tag: string, attrs: Record<string, string>) => {
+        const el = document.createElementNS(ns, tag);
+        for (const [k, val] of Object.entries(attrs)) el.setAttribute(k, val);
+        el.setAttribute("stroke", css);
+        el.setAttribute("stroke-width", String(Math.max(1, this.drawStyle.width * this._zoom)));
+        el.setAttribute("vector-effect", "non-scaling-stroke");
+        el.setAttribute("stroke-linecap", "round");
+        el.setAttribute("stroke-linejoin", "round");
+        svg.append(el);
+        return el;
+      };
+      const [p0, p1] = [g.pts[0], g.pts[g.pts.length - 1]];
+      const fill = this.drawStyle.fill
+        ? `rgb(${this.drawStyle.fill.map((c) => Math.round(c * 255)).join(" ")})`
+        : "none";
+      if (g.tool === "ink")
+        shape("polyline", { points: g.pts.map((p) => p.join(",")).join(" "), fill: "none" });
+      else if (g.tool === "line" || g.tool === "arrow")
+        shape("line", { x1: String(p0[0]), y1: String(p0[1]), x2: String(p1[0]), y2: String(p1[1]) });
+      else if (g.tool === "square" || g.tool === "text" || g.tool === "image")
+        shape("rect", {
+          x: String(Math.min(p0[0], p1[0])),
+          y: String(Math.min(p0[1], p1[1])),
+          width: String(Math.abs(p1[0] - p0[0])),
+          height: String(Math.abs(p1[1] - p0[1])),
+          fill,
+        });
+      else if (g.tool === "circle")
+        shape("ellipse", {
+          cx: String((p0[0] + p1[0]) / 2),
+          cy: String((p0[1] + p1[1]) / 2),
+          rx: String(Math.abs(p1[0] - p0[0]) / 2),
+          ry: String(Math.abs(p1[1] - p0[1]) / 2),
+          fill,
+        });
+      v.alayer.append(svg);
+    }
+  }
+
   // ----------------------------------------------------------------- links
 
   /** Loads page `i`'s links once, then shows them on its view. */
@@ -1298,9 +1803,15 @@ export class Viewer {
       return;
     }
     this.inflight.add(key);
+    const ver = this.ver(spec.page);
     this.transport(spec, prio)
       .then((t) => {
         this.onTile(t);
+        if (this.ver(spec.page) !== ver) {
+          // The page changed while this was rendering.
+          t.release?.();
+          return;
+        }
         if (spec.w === TILE && spec.page_w !== PREVIEW_W && t.renderUs > SLOW_TILE_US) {
           this.slowPages.add(spec.page);
         }
@@ -1351,6 +1862,7 @@ export class Viewer {
     c.dataset.rot = String(s.rotation);
     c.dataset.side = String(s.w);
     c.dataset.page = String(s.page);
+    c.dataset.ver = String(this.ver(s.page));
     v.tiles.set(key, c);
     v.el.append(c);
     this.dropStaleTiles(s.page);
@@ -1380,7 +1892,8 @@ export class Viewer {
     return (
       Number(c.dataset.pw) !== pw ||
       c.dataset.rot !== String(this._rotation) ||
-      c.dataset.side !== String(this.tileSide(page))
+      c.dataset.side !== String(this.tileSide(page)) ||
+      c.dataset.ver !== String(this.ver(page))
     );
   }
 

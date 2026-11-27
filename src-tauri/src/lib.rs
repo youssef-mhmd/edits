@@ -5,6 +5,7 @@
 //! on the engine's queue; the response body is raw RGBA.
 
 mod bench;
+mod edit;
 mod nav;
 #[cfg(windows)]
 mod shm;
@@ -90,6 +91,7 @@ fn startup(state: tauri::State<'_, AppState>) -> Startup {
 #[tauri::command]
 async fn open_doc(
     state: tauri::State<'_, AppState>,
+    edits: tauri::State<'_, edit::EditState>,
     path: Option<String>,
     password: Option<String>,
 ) -> Result<DocInfo, EngineError> {
@@ -97,6 +99,7 @@ async fn open_doc(
     let indexer = state.engine.clone();
     let initial = state.initial.clone();
     let initial_path = state.args.file.clone();
+    let opened_path = path.clone().map(PathBuf::from).or_else(|| initial_path.clone());
     let info = tauri::async_runtime::spawn_blocking(move || match path {
         Some(p) => engine.open(p, password),
         // A password for the launch file: open it again with the password.
@@ -112,11 +115,15 @@ async fn open_doc(
     .map_err(|_| EngineError::Stopped)??;
     // Index the text in the background, so search can start at once.
     text::start_index(indexer, info.doc);
+    if let Some(p) = opened_path {
+        edits.opened(info.doc, p, info.page_count);
+    }
     Ok(info)
 }
 
 #[tauri::command]
-fn close_doc(state: tauri::State<'_, AppState>, doc: DocId) {
+fn close_doc(state: tauri::State<'_, AppState>, edits: tauri::State<'_, edit::EditState>, doc: DocId) {
+    edits.closed(doc);
     state.engine.close(doc);
 }
 
@@ -202,6 +209,7 @@ pub fn run() {
             tiles::handle(&tile_engine, request, responder);
         })
         .manage(Arc::new(text::Searches::default()))
+        .manage(edit::EditState::default())
         .manage(AppState { engine, args, initial, main_unix_ms, setup_unix_ms: setup_ms.clone() })
         .invoke_handler(tauri::generate_handler![
             startup,
@@ -220,9 +228,27 @@ pub fn run() {
             state::load_state,
             state::save_state,
             state::third_party_licenses,
+            edit::annots_page,
+            edit::annots_all,
+            edit::annot_add,
+            edit::annot_move,
+            edit::annot_resize,
+            edit::annot_style,
+            edit::annot_remove,
+            edit::edit_undo,
+            edit::edit_redo,
+            edit::save_doc,
+            edit::edit_status,
+            edit::user_name,
+            edit::recovery_offer,
+            edit::recovery_restore,
+            edit::recovery_discard,
         ])
         .setup(move |app| {
             *setup_ms_hook.lock().unwrap_or_else(|e| e.into_inner()) = unix_ms();
+            if let Ok(dir) = state::data_dir(app.handle()) {
+                edit::set_recovery_dir(dir.join("recovery"));
+            }
             // The window starts dark (tauri.conf.json); paint it light at
             // once if that is the saved theme, so it never flashes dark.
             if let Some(w) = app.get_webview_window("main") {

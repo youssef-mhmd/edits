@@ -7,7 +7,7 @@
     "log": "[document.querySelectorAll('.thumb img').length, !!document.querySelector('.sidebar')]"
   },
   {
-    "click": ".sidebar .tabs button:nth-child(2)",
+    "click": ".sidebar .tabs button:nth-child(3)",
     "wait": 500,
     "shot": "nav-2-bookmarks",
     "log": "[...document.querySelectorAll('.bookmarks .title')].map(b => b.textContent)"

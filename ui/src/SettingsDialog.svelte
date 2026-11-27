@@ -10,12 +10,17 @@
     theme: Theme;
     language: LangSetting;
     checkUpdates: boolean;
+    author: string;
+    /** Used when `author` is empty. */
+    defaultAuthor: string;
+    onauthor: (a: string) => void;
     onchange: (s: { theme: Theme; language: LangSetting; checkUpdates: boolean }) => void;
     /** Looks for an update now; resolves to the new version, or null if up to date. */
     oncheck: () => Promise<string | null>;
     onclose: () => void;
   }
-  let { theme, language, checkUpdates, onchange, oncheck, onclose }: Props = $props();
+  let { theme, language, checkUpdates, author, defaultAuthor, onauthor, onchange, oncheck, onclose }: Props =
+    $props();
 
   // Edited here; the app is told of every change.
   let th: Theme = $state(untrack(() => theme));
@@ -87,6 +92,16 @@
         </label>
       {/each}
     </fieldset>
+    <label class="field">
+      {t("set.author")}
+      <input
+        type="text"
+        dir="auto"
+        value={author}
+        placeholder={defaultAuthor}
+        onchange={(e) => onauthor(e.currentTarget.value.trim())}
+      />
+    </label>
     <fieldset>
       <label><input type="checkbox" bind:checked={up} onchange={changed} /> {t("set.updates")}</label>
       <div class="check">
@@ -151,6 +166,19 @@
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+  .field {
+    display: grid;
+    gap: 4px;
+    color: var(--muted);
+  }
+  .field input {
+    background: var(--control);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    font: inherit;
   }
   .check {
     display: flex;

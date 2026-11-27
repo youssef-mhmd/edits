@@ -1,0 +1,17 @@
+[package]
+name = "edits-text"
+description = "Text for edits: shaping (rustybuzz), bidi, line layout and PDF font embedding"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+rustybuzz = "0.20"
+ttf-parser = "0.25"
+subsetter = "0.2"
+unicode-bidi = "0.3.18"
+
+[lints]
+workspace = true

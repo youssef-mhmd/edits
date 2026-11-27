@@ -7,6 +7,7 @@
 //! are slow to draw are rendered in parallel by worker processes
 //! ([`worker`]).
 
+mod annots;
 mod docs;
 mod engine;
 mod library;

@@ -1,6 +1,19 @@
 # Release notes
 
-## 0.1.0 (not yet published)
+## 0.2.0 (2026-11-27)
+
+Annotate and mark up.
+
+- Highlight, underline, strike through or squiggly-underline selected text, in five colours.
+- Draw with a pen; add lines, arrows, rectangles and ellipses (colour, width, fill).
+- Sticky notes, and text boxes in Arabic or English (letters joined and ordered correctly; double-click to edit).
+- Stamps (معتمد, مسودة, سري, APPROVED, DRAFT, CONFIDENTIAL, RECEIVED) and pictures (JPEG, PNG).
+- Select any annotation, including ones made in other apps: move, resize, recolour, add a note, delete. The Comments tab in the side panel lists them all.
+- Undo and redo (Ctrl Z, Ctrl Y), as far back as you like, also after saving.
+- Save (Ctrl S) adds your changes to the end of the file, leaving the original content as it was; Save As (Ctrl Shift S). edits asks before closing with unsaved changes, and after a crash offers to restore them.
+- Not yet: annotating password-protected files.
+
+## 0.1.0 (2026-11-27)
 
 The first release: a fast PDF reader for Windows, in English and Arabic.
 

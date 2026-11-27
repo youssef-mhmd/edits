@@ -222,3 +222,109 @@ export function search(
 }
 
 export const cancelSearch = (id: number) => invoke<void>("cancel_search", { id });
+
+// ---------------------------------------------------------------- editing
+
+export type MarkupKind = "highlight" | "underline" | "strikeout" | "squiggly";
+
+export interface EditStatus {
+  dirty: boolean;
+  can_undo: boolean;
+  can_redo: boolean;
+}
+
+/** A change's result: the new undo state and the pages to draw again. */
+export interface Changed {
+  status: EditStatus;
+  pages: number[];
+  id: number | null;
+}
+
+export interface Saved {
+  status: EditStatus;
+  path: string;
+  ms: number;
+}
+
+export const annotRemove = (doc: number, id: number) => invoke<Changed>("annot_remove", { doc, id });
+export const editUndo = (doc: number) => invoke<Changed>("edit_undo", { doc });
+export const editRedo = (doc: number) => invoke<Changed>("edit_redo", { doc });
+export const saveDoc = (doc: number, path: string | null = null) => invoke<Saved>("save_doc", { doc, path });
+export const userName = () => invoke<string>("user_name");
+export const recoveryOffer = (doc: number) => invoke<number | null>("recovery_offer", { doc });
+export const recoveryRestore = (doc: number) => invoke<Changed>("recovery_restore", { doc });
+export const recoveryDiscard = (doc: number) => invoke<void>("recovery_discard", { doc });
+
+export type AnnotKind =
+  | "highlight"
+  | "underline"
+  | "strikeout"
+  | "squiggly"
+  | "ink"
+  | "line"
+  | "square"
+  | "circle"
+  | "note"
+  | "freetext"
+  | "stamp"
+  | "other";
+
+/** An annotation, geometry in page fractions (top-left origin, /Rotate applied). */
+export interface AnnotView {
+  id: number;
+  page: number;
+  kind: AnnotKind;
+  subtype: string;
+  /** Left, top, right, bottom. */
+  rect: number[];
+  line: number[] | null;
+  color: number[];
+  fill: number[] | null;
+  opacity: number;
+  width: number;
+  arrow: boolean;
+  contents: string;
+  author: string;
+  modified: string;
+  font_size: number;
+  label: string;
+  picture: boolean;
+}
+
+export interface NewAnnot {
+  page: number;
+  kind: AnnotKind;
+  rects?: number[][];
+  ink?: number[][][];
+  line?: number[];
+  rect?: number[];
+  color: number[];
+  fill?: number[] | null;
+  opacity?: number;
+  width?: number;
+  arrow?: boolean;
+  author?: string;
+  contents?: string;
+  font_size?: number;
+  label?: string;
+  image_path?: string;
+}
+
+export interface AnnotStyle {
+  color?: number[];
+  fill?: number[] | null;
+  width?: number;
+  opacity?: number;
+  contents?: string;
+  font_size?: number;
+}
+
+export const annotsAll = (doc: number) => invoke<AnnotView[]>("annots_all", { doc });
+export const annotsPage = (doc: number, page: number) => invoke<AnnotView[]>("annots_page", { doc, page });
+export const annotAdd = (doc: number, annot: NewAnnot) => invoke<Changed>("annot_add", { doc, annot });
+export const annotMove = (doc: number, id: number, dx: number, dy: number) =>
+  invoke<Changed>("annot_move", { doc, id, dx, dy });
+export const annotResize = (doc: number, id: number, rect: number[]) =>
+  invoke<Changed>("annot_resize", { doc, id, rect });
+export const annotStyle = (doc: number, id: number, style: AnnotStyle) =>
+  invoke<Changed>("annot_style", { doc, id, style });

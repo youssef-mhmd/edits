@@ -1,0 +1,57 @@
+[
+  {
+    "eval": "window.__pp = (page, fx, fy) => { const v = __viewer; const box = v.boxes.get(page); const r = v.scroller.getBoundingClientRect(); return [r.left + box.x + fx * box.pw / v.dpr - v.scroller.scrollLeft, r.top + box.y + fy * box.ph / v.dpr - v.scroller.scrollTop]; }; window.__btn = (label) => [...document.querySelectorAll('header button, .ctxbar button')].find(b => b.getAttribute('aria-label') === label || b.textContent.trim() === label); window.__n = () => (__viewer.pageAnnots(0) ?? []).length; window.__sel = () => { const a = __viewer.selectedAnnot; return a && { kind: a.kind, rect: a.rect.map(v => +v.toFixed(3)), color: a.color.map(v => +v.toFixed(2)), contents: a.contents }; }; __viewer.setZoom(1); __viewer.goToPage(0);",
+    "wait": 600,
+    "log": "[__n(), !!__btn('Rectangle')]"
+  },
+  { "eval": "__btn('Rectangle').click()", "wait": 100, "log": "[__viewer.tool, !!document.querySelector('.ctxbar')]" },
+  {
+    "drag": "[...__pp(0, 0.1, 0.6), ...__pp(0, 0.4, 0.75)]",
+    "wait": 900,
+    "log": "[__n(), !!document.querySelector('.tab .dirty')]",
+    "shot": "draw-1-rect"
+  },
+  { "eval": "__btn('Select text and annotations').click()", "wait": 100, "log": "__viewer.tool" },
+  { "drag": "[...__pp(0, 0.25, 0.675), ...__pp(0, 0.25, 0.675)]", "wait": 300, "log": "__sel()" },
+  {
+    "drag": "[...__pp(0, 0.25, 0.675), ...__pp(0, 0.35, 0.725)]",
+    "wait": 900,
+    "log": "__sel()",
+    "shot": "draw-2-moved"
+  },
+  {
+    "drag": "(() => { const r = __viewer.selectedAnnot.rect; return [...__pp(0, r[2], r[3]), ...__pp(0, r[2] + 0.1, r[3] + 0.05)]; })()",
+    "wait": 900,
+    "log": "__sel()"
+  },
+  { "eval": "[...document.querySelectorAll('.ctxbar .swatch')].find(b => b.getAttribute('aria-label') === '#66bfff').click()", "wait": 900, "log": "__sel()", "shot": "draw-3-recoloured" },
+  { "eval": "__btn('Fill').click()", "wait": 900, "log": "__viewer.selectedAnnot && __viewer.selectedAnnot.fill" },
+  { "eval": "__btn('Note…').click()", "wait": 200, "log": "!!document.querySelector('textarea')" },
+  {
+    "eval": "(() => { const t = document.querySelector('textarea'); t.value = 'ملاحظة: check this'; t.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('.overlay .primary').click(); })()",
+    "wait": 900,
+    "log": "__sel()"
+  },
+  { "key": "Delete", "code": "Delete", "vk": 46, "wait": 900, "log": "[__n(), __viewer.selectedAnnot]" },
+  { "key": "z", "code": "KeyZ", "ctrl": true, "vk": 90, "wait": 900, "log": "__n()" },
+  { "eval": "__btn('Pen').click()", "wait": 100 },
+  { "drag": "[...__pp(0, 0.6, 0.6), ...__pp(0, 0.8, 0.7)]", "wait": 900, "log": "__n()" },
+  { "eval": "__btn('Arrow').click()", "wait": 100 },
+  { "drag": "[...__pp(0, 0.6, 0.8), ...__pp(0, 0.85, 0.85)]", "wait": 900, "log": "__n()", "shot": "draw-4-pen-arrow" },
+  { "key": "F4", "code": "F4", "vk": 115, "wait": 300 },
+  {
+    "eval": "[...document.querySelectorAll('.sidebar .tabs button')].find(b => b.textContent.trim() === 'Comments').click()",
+    "wait": 900,
+    "log": "[...document.querySelectorAll('.sidebar .comment .c-kind')].map(e => e.textContent)",
+    "shot": "draw-5-comments"
+  },
+  { "key": "s", "code": "KeyS", "ctrl": true, "vk": 83, "wait": 1500, "log": "[!!document.querySelector('.tab .dirty'), document.querySelector('.toast')?.textContent ?? 'no error', __n()]" },
+  { "eval": "__btn('Select text and annotations').click()", "wait": 100 },
+  { "drag": "[...__pp(0, 0.7, 0.65), ...__pp(0, 0.7, 0.65)]", "wait": 300, "log": "__sel()" },
+  {
+    "drag": "[...__pp(0, 0.7, 0.65), ...__pp(0, 0.7, 0.45)]",
+    "wait": 900,
+    "log": "[__sel(), !!document.querySelector('.tab .dirty')]",
+    "shot": "draw-6-moved-after-save"
+  }
+]

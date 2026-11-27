@@ -45,5 +45,6 @@ pub const FRAME_P95_MS: f64 = 1000.0 / 60.0 + 2.0;
 /// Growth of all processes (WebView2 included) over the app with no document
 /// open (PRD open question 6).
 pub const MEMORY_ABOVE_IDLE_MB: f64 = 200.0;
+pub const SAVE_MS: f64 = 200.0;
 pub const SEARCH_FIRST_MS: f64 = 200.0;
 pub const SEARCH_ALL_MS: f64 = 2000.0;
