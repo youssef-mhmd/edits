@@ -32,6 +32,8 @@
     pagesRotate,
     pagesSplit,
     pagesUndecorate,
+    formFields,
+    fieldSet,
     type Changed,
     type Decor,
     type DocInfo,
@@ -321,8 +323,9 @@
         runEdit(id, (doc) => annotAdd(doc, { ...n, color: drawColor, author: author || defaultAuthor })),
       move: (aid, dx, dy) => runEdit(id, (doc) => annotMove(doc, aid, dx, dy)),
       resize: (aid, rect) => runEdit(id, (doc) => annotResize(doc, aid, rect)),
-      // Note, text, stamp and picture tools: interface not built yet (M2, in progress).
       place: (tl, page, rect) => void place(id, tl, page, rect),
+      fields: () => formFields(info.doc),
+      setField: (fid, value) => runEdit(id, (doc) => fieldSet(doc, fid, value)),
     };
     return v;
   }
@@ -461,11 +464,17 @@
   }
 
   function undo() {
-    edit(async (tab, v) => changed(tab.id, await editUndo(v.info.doc)));
+    edit(async (tab, v) => {
+      changed(tab.id, await editUndo(v.info.doc));
+      v.reloadFields();
+    });
   }
 
   function redo() {
-    edit(async (tab, v) => changed(tab.id, await editRedo(v.info.doc)));
+    edit(async (tab, v) => {
+      changed(tab.id, await editRedo(v.info.doc));
+      v.reloadFields();
+    });
   }
 
   function setTool(t: Tool) {
@@ -568,7 +577,7 @@
     restoreOffer = null;
     const v = o && tabs.find((t) => t.id === o.tabId)?.viewer;
     if (!o || !v) return;
-    if (keep) void runEdit(o.tabId, (doc) => recoveryRestore(doc));
+    if (keep) void runEdit(o.tabId, (doc) => recoveryRestore(doc)).then(() => v.reloadFields());
     else void recoveryDiscard(v.info.doc).catch(() => {});
   }
 
@@ -916,7 +925,10 @@
     // Dialogs handle their own keys.
     if (printOpen || settingsOpen || pwPrompt || unsavedPrompt || noteEdit || restoreOffer) return;
     if (cropFor || headerFor || splitOpen || mergeFiles_) return;
-    const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement;
+    const typing =
+      e.target instanceof HTMLInputElement ||
+      e.target instanceof HTMLSelectElement ||
+      e.target instanceof HTMLTextAreaElement;
     // The page grid handles its own keys; only undo and redo pass through.
     const organizing = !!active?.organize;
     const undoRedo = (k: KeyboardEvent): (() => void) | null => {

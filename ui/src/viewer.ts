@@ -19,6 +19,8 @@ import {
   setViewport,
   type AnnotView,
   type DocInfo,
+  type FieldValue,
+  type FormField,
   type NewAnnot,
   type Link,
   type RenderSpec,
@@ -67,6 +69,9 @@ export interface Editor {
   resize(id: number, rect: number[]): Promise<void>;
   /** A placing tool was used: `rect` is the box dragged, or a point (left = right). */
   place(tool: Tool, page: number, rect: number[]): void;
+  /** The document's form fields. */
+  fields(): Promise<FormField[]>;
+  setField(id: [number, number], value: FieldValue): Promise<void>;
 }
 
 /** An annotation being pressed, moved, resized or drawn. */
@@ -199,6 +204,8 @@ interface PageView {
   marks: HTMLDivElement;
   /** Annotation selection and drawing, in unrotated page space (turned with CSS). */
   alayer: HTMLDivElement;
+  /** Form fields to fill, placed like `alayer`. */
+  flayer: HTMLDivElement;
 }
 
 /** A caret: page index and position between characters of its text. */
@@ -329,6 +336,10 @@ export class Viewer {
     color: [0.9, 0.1, 0.1],
   };
   private annots = new Map<number, AnnotView[] | "loading">();
+  private formFields: FormField[] | null = null;
+  private fieldsAsked = false;
+  /** A field to focus once its page's controls exist ("num gen"). */
+  private pendingFocus: string | null = null;
   private selAnnot: AnnotView | null = null;
   private gesture: Gesture | null = null;
 
@@ -685,6 +696,7 @@ export class Viewer {
   private place(i: number, v: PageView) {
     this.placeLinks(i, v);
     this.orientLayer(i, v);
+    this.drawFields(i);
     this.drawMarks(i);
     const b = this.boxes.get(i)!;
     const st = v.el.style;
@@ -947,6 +959,9 @@ export class Viewer {
         const alayer = document.createElement("div");
         alayer.className = "alayer";
         el.append(alayer);
+        const flayer = document.createElement("div");
+        flayer.className = "flayer";
+        el.append(flayer);
         const v: PageView = {
           el,
           preview: null,
@@ -956,6 +971,7 @@ export class Viewer {
           links: [],
           marks,
           alayer,
+          flayer,
         };
         this.views.set(i, v);
         this.place(i, v);
@@ -964,6 +980,7 @@ export class Viewer {
         if (err) this.showError(v, err);
         this.loadLinks(i);
         this.loadAnnots(i);
+        this.drawFields(i);
         if (this.pageHasMarks(i)) void this.loadText(i).then(() => this.drawMarks(i));
       }
     }
@@ -1205,6 +1222,8 @@ export class Viewer {
   private onMouseDown(e: MouseEvent) {
     if (e.button !== 0) return;
     if (this._tool === "select" && (e.target as HTMLElement).closest("a.link")) return;
+    // Form fields take their own clicks and typing.
+    if ((e.target as HTMLElement).closest(".field")) return;
     const at = this.pointToPage(e.clientX, e.clientY);
     if (!at) return;
     e.preventDefault();
@@ -1660,12 +1679,193 @@ export class Viewer {
     const w = b.pw / this.dpr;
     const h = b.ph / this.dpr;
     const odd = this._rotation % 2 === 1;
-    const st = v.alayer.style;
-    st.width = `${odd ? h : w}px`;
-    st.height = `${odd ? w : h}px`;
-    st.left = `${w / 2}px`;
-    st.top = `${h / 2}px`;
-    st.transform = `translate(-50%, -50%) rotate(${this._rotation * 90}deg)`;
+    for (const layer of [v.alayer, v.flayer]) {
+      const st = layer.style;
+      st.width = `${odd ? h : w}px`;
+      st.height = `${odd ? w : h}px`;
+      st.left = `${w / 2}px`;
+      st.top = `${h / 2}px`;
+      st.transform = `translate(-50%, -50%) rotate(${this._rotation * 90}deg)`;
+    }
+  }
+
+  // ------------------------------------------------------------ form fields
+
+  /** Reads the form fields again (after undo, redo or restore changed values). */
+  reloadFields() {
+    this.formFields = null;
+    this.fieldsAsked = false;
+    for (const i of this.views.keys()) this.drawFields(i);
+  }
+
+  /** The form fields, once loaded (tests and the toolbar). */
+  get fields(): FormField[] | null {
+    return this.formFields;
+  }
+
+  /** Moves the keyboard to field number `k` of the tab order, showing its page. */
+  focusField(k: number) {
+    const list = this.formFields?.filter((f) => this.fillable(f)) ?? [];
+    if (!list.length) return;
+    const f = list[((k % list.length) + list.length) % list.length];
+    const page = f.boxes[0].page;
+    const fid = f.id.join(" ");
+    const here = this.views.get(page)?.flayer.querySelector<HTMLElement>(`[data-fid="${fid}"]`);
+    if (here && this.pagesInView(0).includes(page)) {
+      here.focus();
+      return;
+    }
+    this.pendingFocus = fid;
+    if (!this.views.has(page) || !this.pagesInView(0).includes(page)) {
+      const r = f.boxes[0].rect;
+      this.navigate(page, Math.max(0, r[1] - 0.1));
+    }
+    this.drawFields(page);
+  }
+
+  private fillable(f: FormField) {
+    return !f.read_only && f.kind !== "other" && f.boxes.length > 0;
+  }
+
+  /** Draws page `i`'s form fields: controls over the widgets, filled in place. */
+  private drawFields(i: number) {
+    const v = this.views.get(i);
+    if (!v || !this.editor) return;
+    if (!this.formFields) {
+      if (!this.fieldsAsked) {
+        this.fieldsAsked = true;
+        void this.editor
+          .fields()
+          .then((f) => {
+            this.formFields = f;
+            for (const k of this.views.keys()) this.drawFields(k);
+            this.onUpdate();
+          })
+          .catch(() => (this.formFields = []));
+      }
+      return;
+    }
+    // Keep a control being typed into.
+    const active = document.activeElement as HTMLElement | null;
+    if (active && v.flayer.contains(active)) return;
+    v.flayer.replaceChildren();
+    const b = this.boxes.get(i);
+    const size = this.info.pages[i];
+    if (!b || !size) return;
+    const odd = this._rotation % 2 === 1;
+    // CSS px per point of the page (layer space is the page unturned by the view).
+    const ptPx = b.pw / this.dpr / (odd ? size.h : size.w);
+    const fillable = this.formFields.filter((f) => this.fillable(f));
+    const pct = (x: number) => `${x * 100}%`;
+    for (const f of fillable) {
+      const order = fillable.indexOf(f);
+      f.boxes.forEach((box, n) => {
+        if (box.page !== i) return;
+        const r = box.rect;
+        const hPx = (r[3] - r[1]) * ((odd ? b.pw : b.ph) / this.dpr);
+        const el = this.fieldControl(
+          f,
+          n,
+          Math.max(4, f.font_size > 0 ? f.font_size * ptPx : Math.min(12 * ptPx, hPx * 0.72)),
+        );
+        el.classList.add("field");
+        if (f.required) el.classList.add("required");
+        el.dataset.fid = f.id.join(" ");
+        el.title = f.tooltip || f.name;
+        el.setAttribute("aria-label", f.tooltip || f.name);
+        el.style.left = pct(r[0]);
+        el.style.top = pct(r[1]);
+        el.style.width = pct(r[2] - r[0]);
+        el.style.height = pct(r[3] - r[1]);
+        el.addEventListener("keydown", (e) => {
+          if (e.key === "Tab") {
+            e.preventDefault();
+            this.focusField(order + (e.shiftKey ? -1 : 1));
+          }
+        });
+        v.flayer.append(el);
+        if (this.pendingFocus === el.dataset.fid && n === f.boxes.findIndex((x) => x.page === i)) {
+          this.pendingFocus = null;
+          el.focus({ preventScroll: true });
+        }
+      });
+    }
+  }
+
+  /** The control for widget `n` of field `f`. */
+  private fieldControl(f: FormField, n: number, fontPx: number): HTMLElement {
+    const commit = (value: FieldValue) => {
+      f.value = value;
+      void this.editor?.setField(f.id, value);
+    };
+    const font = `${fontPx}px`;
+    if (f.kind === "check" || f.kind === "radio") {
+      const on = f.boxes[n].on;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = f.kind === "check" ? "fbox" : "fbox fradio";
+      const isOn = () => f.value.type === "state" && f.value.value !== null && f.value.value === on;
+      btn.setAttribute("role", f.kind === "check" ? "checkbox" : "radio");
+      btn.setAttribute("aria-checked", String(isOn()));
+      btn.addEventListener("click", () => {
+        const next = isOn() ? (f.kind === "radio" && f.no_toggle_off ? on : null) : on;
+        btn.setAttribute("aria-checked", String(next !== null && next === on));
+        commit({ type: "state", value: next ?? null });
+      });
+      return btn;
+    }
+    if (f.kind === "combo" || f.kind === "list") {
+      const sel = document.createElement("select");
+      sel.className = "fchoice";
+      sel.style.fontSize = font;
+      if (f.kind === "list") {
+        sel.multiple = f.multi_select;
+        sel.size = Math.max(2, f.options.length);
+      } else {
+        sel.append(new Option("", ""));
+      }
+      const chosen = f.value.type === "choice" ? f.value.value : [];
+      for (const [exp, shown] of f.options) {
+        const o = new Option(shown, exp);
+        o.selected = chosen.includes(exp);
+        sel.append(o);
+      }
+      sel.dir = "auto";
+      sel.addEventListener("change", () => {
+        const vals = [...sel.selectedOptions].map((o) => o.value).filter((x) => x !== "");
+        commit({ type: "choice", value: vals });
+      });
+      return sel;
+    }
+    const input: HTMLInputElement | HTMLTextAreaElement = f.multiline
+      ? document.createElement("textarea")
+      : document.createElement("input");
+    if (input instanceof HTMLInputElement) input.type = f.password ? "password" : "text";
+    input.className = "ftext";
+    input.dir = "auto";
+    input.spellcheck = false;
+    input.style.fontSize = font;
+    if (f.max_len) input.maxLength = f.max_len;
+    if (f.comb && f.max_len) input.classList.add("comb");
+    const text = f.value.type === "text" ? f.value.value : "";
+    input.value = text;
+    let start = text;
+    input.addEventListener("focus", () => (start = input.value));
+    input.addEventListener("keydown", (e) => {
+      const k = e as KeyboardEvent;
+      if (k.key === "Escape") {
+        input.value = start;
+        input.blur();
+      } else if (k.key === "Enter" && input instanceof HTMLInputElement) {
+        input.blur();
+      }
+      k.stopPropagation();
+    });
+    input.addEventListener("change", () => {
+      if (input.value !== start) commit({ type: "text", value: input.value });
+      start = input.value;
+    });
+    return input;
   }
 
   /** Draws page `i`'s annotation frame, handles and drawing preview. */
