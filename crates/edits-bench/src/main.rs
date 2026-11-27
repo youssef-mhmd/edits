@@ -94,6 +94,10 @@ fn main() -> ExitCode {
             (Some(a), Some(b)) => core_bench::annot_demo(Path::new(a), Path::new(b)),
             _ => Err("annot-demo needs SRC OUT".into()),
         },
+        "fields" => match args.first() {
+            Some(f) => core_bench::fields(Path::new(f)),
+            None => Err("fields needs a FILE".into()),
+        },
         "pages-demo" => match (args.first(), args.get(1)) {
             (Some(a), Some(b)) => core_bench::pages_demo(Path::new(a), Path::new(b)),
             _ => Err("pages-demo needs SRC OUT".into()),
@@ -106,6 +110,7 @@ fn main() -> ExitCode {
         "check" => check::run_all(&dir_arg(&args)),
         "pdf-check" => check::pdf_all(&dir_arg(&args)),
         "pages-check" => check::pages_all(&dir_arg(&args)),
+        "forms-check" => check::forms_all(&dir_arg(&args), args.get(1).map(Path::new)),
         "lopdf-check" => check::lopdf_all(&dir_arg(&args)),
         // Internal: run by `check` in a child process so a crash is contained.
         "render-file" => match args.first() {

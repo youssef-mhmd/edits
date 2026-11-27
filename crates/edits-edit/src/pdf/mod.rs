@@ -3,6 +3,7 @@
 //! append changes to them; rendering stays with PDFium.
 
 pub mod copy;
+pub mod crypt;
 pub mod file;
 pub mod object;
 pub mod write;

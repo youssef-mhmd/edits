@@ -63,15 +63,15 @@ impl EditState {
     /// Starts a session for a newly opened document. `pages` is the page
     /// count the renderer found; editing is refused if edits reads the file
     /// differently (damaged files), so changes never land on the wrong page.
-    pub fn opened(&self, doc: DocId, path: PathBuf, pages: u32) {
-        let slot = match Session::open(&path) {
+    pub fn opened(&self, doc: DocId, path: PathBuf, pages: u32, password: &str) {
+        let slot = match Session::open_with_password(&path, password) {
             Ok(s) if s.page_count().ok() == Some(pages) => Ok(s),
             Ok(_) => {
                 Err("this file is damaged, so it cannot be changed. Save a copy with Save As, then edit the copy."
                     .into())
             }
             Err(edits_edit::pdf::PdfError::Encrypted) => {
-                Err("this file is encrypted. Changing encrypted files comes in a later version.".into())
+                Err("this file's protection could not be opened for changes".into())
             }
             Err(e) => Err(format!("this file cannot be changed: {e}")),
         };

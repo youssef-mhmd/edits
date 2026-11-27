@@ -12,6 +12,9 @@ serde.workspace = true
 thiserror.workspace = true
 flate2 = "1"
 png = "0.17"
+aes = "0.9"
+md-5 = "0.11"
+sha2 = "0.11"
 edits-text.workspace = true
 
 [dev-dependencies]

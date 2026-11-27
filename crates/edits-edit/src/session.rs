@@ -17,8 +17,10 @@ use crate::pdf::object::encode_text;
 use crate::pdf::{Dict, FileSource, Obj, PdfError, PdfFile, Ref, write};
 
 mod decor;
+mod fields;
 mod pages;
 pub use decor::Decor;
+pub use fields::{FieldView, WidgetView};
 pub use pages::{PageSlot, PageSrc};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -59,6 +61,12 @@ enum Command {
     Remove(AnnotId),
     Change {
         id: AnnotId,
+        from: usize,
+        to: usize,
+    },
+    /// A form field's value changed (indexes into its versions).
+    Field {
+        obj: Ref,
         from: usize,
         to: usize,
     },
@@ -126,6 +134,8 @@ pub struct Recovery {
     foreign: Vec<(PathBuf, Vec<u32>)>,
     #[serde(default)]
     decors: Vec<Decor>,
+    #[serde(default)]
+    field_values: Vec<(Ref, fields::FieldEntry)>,
 }
 
 fn stamp_of(path: &Path) -> Option<(u64, u128)> {
@@ -154,6 +164,8 @@ pub struct Session {
     tail: Option<Arc<Vec<u8>>>,
     /// The base file's page count.
     base_pages: u32,
+    /// The password the file was opened with (to read it again after saving).
+    password: String,
     /// Every page list the document has had; `orders[order_at]` is now.
     orders: Vec<Vec<PageSlot>>,
     order_at: usize,
@@ -165,22 +177,29 @@ pub struct Session {
     foreign: Vec<pages::Foreign>,
     /// Headers, footers and watermarks added to pages.
     decors: Vec<Decor>,
+    /// Form fields as read from the base file (read when first asked for).
+    fields: Option<Vec<crate::forms::Field>>,
+    /// Values given to fields, with their history.
+    field_values: BTreeMap<Ref, fields::FieldEntry>,
     layout_changed: bool,
 }
 
-fn open_base(path: &Path) -> Result<PdfFile<Arc<FileSource>>, PdfError> {
-    let f = PdfFile::open(Arc::new(FileSource::open(path)?))?;
-    if f.is_encrypted() {
-        return Err(PdfError::Encrypted);
-    }
-    Ok(f)
+/// Opens the base file; a protected one with `password` (empty for files
+/// that only restrict permissions).
+fn open_base(path: &Path, password: &[u8]) -> Result<PdfFile<Arc<FileSource>>, PdfError> {
+    PdfFile::open_with_password(Arc::new(FileSource::open(path)?), password)
 }
 
 impl Session {
     /// Opens `path` for editing. Fails for encrypted files and for files
     /// whose structure edits cannot read.
     pub fn open(path: &Path) -> Result<Self, PdfError> {
-        let base = open_base(path)?;
+        Self::open_with_password(path, "")
+    }
+
+    /// Opens a password-protected file for editing.
+    pub fn open_with_password(path: &Path, password: &str) -> Result<Self, PdfError> {
+        let base = open_base(path, password.as_bytes())?;
         let n = base.pages()?.len() as u32;
         let mut s = Session {
             path: path.to_path_buf(),
@@ -195,6 +214,7 @@ impl Session {
             assigned: HashMap::new(),
             tail: None,
             base_pages: n,
+            password: password.to_string(),
             orders: vec![pages::identity(n)],
             order_at: 0,
             pos: HashMap::new(),
@@ -202,6 +222,8 @@ impl Session {
             images: Vec::new(),
             foreign: Vec::new(),
             decors: Vec::new(),
+            fields: None,
+            field_values: BTreeMap::new(),
             layout_changed: false,
         };
         s.reindex();
@@ -258,6 +280,7 @@ impl Session {
             images: self.images.clone(),
             foreign: self.foreign.iter().map(|f| (f.path.clone(), f.copied.clone())).collect(),
             decors: self.decors.clone(),
+            field_values: fields::to_list(&self.field_values),
         })
     }
 
@@ -278,6 +301,10 @@ impl Session {
         self.next_id = r.next_id;
         self.next_seq = r.next_seq;
         self.saved_at = r.saved_at;
+        self.field_values = fields::from_list(r.field_values);
+        if !self.field_values.is_empty() {
+            self.base_fields()?;
+        }
         if !r.orders.is_empty() {
             // Pages from other files are copied again, in the same order, so
             // they get the same numbers.
@@ -426,6 +453,17 @@ impl Session {
     /// Applies or reverts `c`; returns the page keys to draw again.
     fn apply(&mut self, c: Command, backwards: bool) -> Vec<u32> {
         match c {
+            Command::Field { obj, from, to } => {
+                let Some(e) = self.field_values.get_mut(&obj) else { return Vec::new() };
+                e.cur = if backwards { from } else { to };
+                // Keys of base pages are their indexes in the base file.
+                self.fields
+                    .iter()
+                    .flatten()
+                    .filter(|f| f.obj == obj)
+                    .flat_map(|f| f.widgets.iter().map(|w| w.page))
+                    .collect()
+            }
             Command::Pages { from, to } => {
                 self.order_at = if backwards { from } else { to };
                 self.reindex();
@@ -493,12 +531,12 @@ impl Session {
             };
             // Page keys, objects and history all refer to the old file:
             // start again from the saved one.
-            *self = Session::open(target)?;
+            *self = Session::open_with_password(target, &self.password)?;
             self.layout_changed = true;
             return Ok(len);
         }
         let len = self.append_to(target)?;
-        self.base = open_base(target)?;
+        self.base = open_base(target, self.password.as_bytes())?;
         self.path = target.to_path_buf();
         for (id, e) in &mut self.entries {
             if e.alive {
@@ -510,6 +548,9 @@ impl Session {
             }
         }
         self.assigned.clear();
+        for e in self.field_values.values_mut() {
+            e.saved = e.cur;
+        }
         self.tail = None;
         self.saved_at = self.at();
         Ok(len)
@@ -917,13 +958,13 @@ mod tests {
     }
 
     #[test]
-    fn encrypted_files_are_refused() {
+    fn broken_protection_is_refused() {
         let path = temp_pdf("enc.pdf");
         let mut b = std::fs::read(&path).unwrap();
         let t = b.windows(7).rposition(|w| w == b"/Root 1").unwrap();
         b.splice(t..t, b"/Encrypt 9 0 R ".iter().copied());
         std::fs::write(&path, b).unwrap();
-        assert!(matches!(Session::open(&path), Err(PdfError::Encrypted)));
+        assert!(Session::open(&path).is_err());
     }
 
     #[test]

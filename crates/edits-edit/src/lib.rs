@@ -3,6 +3,7 @@
 //! renders the base file with the update this crate builds on top.
 
 pub mod ap;
+pub mod forms;
 pub mod image;
 pub mod model;
 pub mod pdf;

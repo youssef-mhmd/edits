@@ -193,10 +193,48 @@ pub struct PdfFile<S: Source> {
     pub size: u32,
     streams: RefCell<HashMap<u32, Arc<Members>>>,
     pages: RefCell<Option<Vec<Ref>>>,
+    /// Keys of a protected file; objects are decrypted as they are read.
+    pub crypt: Option<super::crypt::Crypt>,
 }
 
 impl<S: Source> PdfFile<S> {
+    /// Opens a file; a protected one only if it opens without a password
+    /// (permissions only), else `PdfError::Encrypted`.
     pub fn open(src: S) -> Result<Self, PdfError> {
+        Self::open_with_password(src, b"")
+    }
+
+    /// Opens a file, protected ones with `password`.
+    pub fn open_with_password(src: S, password: &[u8]) -> Result<Self, PdfError> {
+        let mut f = Self::open_plain(src)?;
+        if let Some(e) = f.trailer.get(b"Encrypt").cloned() {
+            let dict_obj = e.as_ref();
+            let enc = f.resolve(&e)?;
+            let id0 = match f.trailer.get(b"ID").map(|i| f.resolve(i)).transpose()? {
+                Some(Obj::Array(a)) => match a.first() {
+                    Some(Obj::Str(s)) => s.clone(),
+                    _ => Vec::new(),
+                },
+                _ => Vec::new(),
+            };
+            let enc = enc.as_dict().ok_or(PdfError::Damaged("bad /Encrypt".into()))?;
+            match super::crypt::Crypt::new(enc, dict_obj, &id0, password) {
+                Ok(c) => {
+                    f.crypt = Some(c);
+                    // Object streams read before the key was known.
+                    f.streams.borrow_mut().clear();
+                    *f.pages.borrow_mut() = None;
+                }
+                Err(super::crypt::CryptError::Password) => return Err(PdfError::Encrypted),
+                Err(super::crypt::CryptError::Unsupported(what)) => {
+                    return Err(PdfError::Damaged(format!("protected with {what}")));
+                }
+            }
+        }
+        Ok(f)
+    }
+
+    fn open_plain(src: S) -> Result<Self, PdfError> {
         let len = src.len();
         let tail_len = len.min(2048);
         let mut tail = vec![0u8; tail_len as usize];
@@ -217,6 +255,7 @@ impl<S: Source> PdfFile<S> {
             size: 0,
             streams: RefCell::new(HashMap::new()),
             pages: RefCell::new(None),
+            crypt: None,
         };
         let mut queue = vec![startxref];
         let mut seen = HashSet::new();
@@ -256,6 +295,7 @@ impl<S: Source> PdfFile<S> {
         self.src.len() == 0
     }
 
+    /// True if the file is protected (with a password or permissions).
     pub fn is_encrypted(&self) -> bool {
         self.trailer.get(b"Encrypt").is_some()
     }
@@ -464,7 +504,10 @@ impl<S: Source> PdfFile<S> {
                 if got.0 != r.0 {
                     return damaged(format!("object {} is not where the table says", r.0));
                 }
-                Ok(o)
+                Ok(match &self.crypt {
+                    Some(c) => c.decrypt(got, o),
+                    None => o,
+                })
             }
             Some(Entry::InStream(container)) => {
                 let objs = self.object_stream(*container)?;
@@ -488,7 +531,11 @@ impl<S: Source> PdfFile<S> {
         let Some(Entry::Offset(off)) = self.xref.get(&container).copied() else {
             return damaged("object stream missing");
         };
-        let (_, o) = self.object_at(off)?;
+        let (r, o) = self.object_at(off)?;
+        let o = match &self.crypt {
+            Some(c) => c.decrypt(r, o),
+            None => o,
+        };
         let Obj::Stream(d, raw) = o else { return damaged("object stream missing") };
         let data = decode(&d, &raw)?;
         let n = d.get(b"N").and_then(Obj::as_int).unwrap_or(0).clamp(0, 1_000_000) as usize;

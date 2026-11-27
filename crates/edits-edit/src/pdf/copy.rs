@@ -141,10 +141,19 @@ pub fn rewrite<S: Source>(f: &PdfFile<S>, out: &mut dyn Write) -> Result<u64, Pd
         })
     };
     let mut trailer = Dict::default();
-    for key in [&b"Root"[..], b"Info"] {
-        if let Some(Obj::Ref(r)) = f.trailer.get(key) {
-            let n = number(*r, &mut work, &mut map);
-            trailer.set(key, Obj::Ref((n, 0)));
+    // A protected file stays protected the same way (same key and ID).
+    let mut enc_obj = None;
+    for key in [&b"Root"[..], b"Info", b"Encrypt"] {
+        match f.trailer.get(key) {
+            Some(Obj::Ref(r)) => {
+                let n = number(*r, &mut work, &mut map);
+                trailer.set(key, Obj::Ref((n, 0)));
+                if key == b"Encrypt" {
+                    enc_obj = Some(n);
+                }
+            }
+            Some(d @ Obj::Dict(_)) if key == b"Encrypt" => trailer.set(key, d.clone()),
+            _ => {}
         }
     }
     if let Some(id) = f.trailer.get(b"ID") {
@@ -161,6 +170,10 @@ pub fn rewrite<S: Source>(f: &PdfFile<S>, out: &mut dyn Write) -> Result<u64, Pd
             _ => false,
         });
         let o = if dead { Obj::Null } else { renumber(&got, &mut |r| number(r, &mut work, &mut map)) };
+        let o = match &f.crypt {
+            Some(c) if Some(n) != enc_obj => c.encrypt((n, 0), o),
+            _ => o,
+        };
         debug_assert_eq!(n as usize, offsets.len());
         offsets.push(w.n);
         buf.clear();

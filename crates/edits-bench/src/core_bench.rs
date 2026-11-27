@@ -505,3 +505,26 @@ pub fn pages_demo(src: &Path, out: &Path) -> Res<bool> {
     println!("{}: {} pages, {len} bytes", out.display(), s.page_count()?);
     Ok(true)
 }
+
+/// Lists a document's form fields as edits reads them.
+pub fn fields(path: &Path) -> Res<bool> {
+    use edits_edit::pdf::{FileSource, PdfFile};
+    let f = PdfFile::open(FileSource::open(path)?)?;
+    let fields = edits_edit::forms::read_fields(&f)?;
+    let mut kinds = std::collections::BTreeMap::new();
+    for fl in &fields {
+        *kinds.entry(format!("{:?}", fl.kind)).or_insert(0) += 1;
+    }
+    println!("{}: {} fields {kinds:?}", path.display(), fields.len());
+    for fl in fields.iter().take(6) {
+        println!(
+            "  {:?} {} = {:?} ({} widgets, page {})",
+            fl.kind,
+            fl.name,
+            fl.value,
+            fl.widgets.len(),
+            fl.widgets[0].page
+        );
+    }
+    Ok(true)
+}

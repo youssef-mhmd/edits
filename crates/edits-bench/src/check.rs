@@ -413,3 +413,112 @@ pub fn pages_all(dir: &Path) -> Res<bool> {
     println!("{checked} files checked");
     Ok(ok)
 }
+
+/// Fills every field of every corpus file that has a form: text fields get
+/// sample text (Arabic and Latin), boxes are ticked, the last radio button
+/// and the first choice are chosen. Saved to a copy, which must read back
+/// with the same values (edits' reader) and open and render in PDFium.
+pub fn forms_all(dir: &Path, keep: Option<&Path>) -> Res<bool> {
+    use edits_edit::Session;
+    use edits_edit::forms::{FieldKind, FieldValue};
+    let engine = Engine::start()?;
+    let tmp = std::env::temp_dir().join(format!("edits-forms-check-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp)?;
+    let mut ok = true;
+    for path in pdf_files(dir)? {
+        let name = path.strip_prefix(dir).unwrap_or(&path).display().to_string();
+        let Ok(mut s) = Session::open(&path) else { continue };
+        let Ok(fields) = s.fields() else { continue };
+        if fields.is_empty() {
+            continue;
+        }
+        let out = match keep {
+            Some(k) => k.join(path.file_name().unwrap_or_default()),
+            None => tmp.join("filled.pdf"),
+        };
+        let t = Instant::now();
+        let mut want = Vec::new();
+        let mut errors = Vec::new();
+        for f in fields.iter().filter(|f| !f.field.read_only) {
+            let v = match f.field.kind {
+                FieldKind::Text if f.field.comb || f.field.max_len.is_some_and(|m| m < 8) => {
+                    FieldValue::Text("1234567890".chars().take(f.field.max_len.unwrap_or(4) as usize).collect())
+                }
+                FieldKind::Text if f.field.multiline => {
+                    FieldValue::Text("سطر أول بالعربية\nSecond line, English".into())
+                }
+                FieldKind::Text => FieldValue::Text("اختبار Test 123".into()),
+                FieldKind::Check => FieldValue::State(f.field.widgets[0].on.clone()),
+                FieldKind::Radio => FieldValue::State(f.field.widgets.last().and_then(|w| w.on.clone())),
+                FieldKind::Combo | FieldKind::List => match f.field.options.first() {
+                    Some(o) => FieldValue::Choice(vec![o.0.clone()]),
+                    None => continue,
+                },
+                FieldKind::Other => continue,
+            };
+            match s.set_field(f.id, v) {
+                Ok(_) => want.push(f.id),
+                Err(e) => errors.push(format!("{}: {e}", f.field.name)),
+            }
+        }
+        let fill_ms = t.elapsed().as_secs_f64() * 1000.0;
+        let expected: Vec<(String, FieldValue)> =
+            s.fields()?.into_iter().filter(|f| want.contains(&f.id)).map(|f| (f.field.name, f.field.value)).collect();
+        let _ = std::fs::copy(&path, &out);
+        let saved = (|| -> Result<(), String> {
+            let t2 = Instant::now();
+            let mut s2 = Session::open(&out).map_err(|e| e.to_string())?;
+            // The same values on the copy, then saved.
+            for f in s.fields().map_err(|e| e.to_string())?.into_iter().filter(|f| want.contains(&f.id)) {
+                s2.set_field(f.id, f.field.value).map_err(|e| e.to_string())?;
+            }
+            s2.save(&out).map_err(|e| e.to_string())?;
+            let save_ms = t2.elapsed().as_secs_f64() * 1000.0;
+            let mut back = Session::open(&out).map_err(|e| e.to_string())?;
+            let got: Vec<(String, FieldValue)> = back
+                .fields()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .filter(|f| want.contains(&f.id))
+                .map(|f| (f.field.name, f.field.value))
+                .collect();
+            if got != expected {
+                let diff = got.iter().zip(&expected).find(|(a, b)| a != b);
+                return Err(format!("values differ after reading back: {diff:?}"));
+            }
+            let info = engine.open(&out, None).map_err(|e| e.to_string())?;
+            for p in 0..info.page_count {
+                let spec = RenderSpec {
+                    doc: info.doc,
+                    page: p,
+                    page_w: 300,
+                    page_h: 300,
+                    x: 0,
+                    y: 0,
+                    w: 300,
+                    h: 300,
+                    rotation: 0,
+                };
+                engine.render(spec, 0).map_err(|e| format!("page {p}: {e}"))?;
+            }
+            engine.close(info.doc);
+            println!("            saved in {save_ms:.0} ms");
+            Ok(())
+        })();
+        match saved {
+            Ok(()) if errors.is_empty() => {
+                println!("OK          {name}: {} of {} fields filled in {fill_ms:.0} ms", want.len(), fields.len())
+            }
+            Ok(()) => {
+                ok = false;
+                println!("REFUSED     {name}: {} fields; {}", errors.len(), errors[0]);
+            }
+            Err(e) => {
+                ok = false;
+                println!("FAIL        {name}: {e}");
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+    Ok(ok)
+}
