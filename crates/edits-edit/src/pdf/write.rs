@@ -17,13 +17,17 @@ pub fn update<S: Source>(base: &PdfFile<S>, objects: &[(Ref, Obj)]) -> Vec<u8> {
     for ((n, g), o) in objects {
         offsets.push((*n, *g, base_len + out.len() as u64));
         out.extend_from_slice(format!("{n} {g} obj\n").as_bytes());
-        write(o, &mut out);
+        match &base.crypt {
+            // A protected file's update is protected with the same key.
+            Some(c) => write(&c.encrypt((*n, *g), o.clone()), &mut out),
+            None => write(o, &mut out),
+        }
         out.extend_from_slice(b"\nendobj\n");
     }
     let size = objects.iter().map(|((n, _), _)| n + 1).max().unwrap_or(0).max(base.size);
 
     let mut trailer = Dict::default();
-    for key in [&b"Root"[..], b"Info", b"ID"] {
+    for key in [&b"Root"[..], b"Info", b"ID", b"Encrypt"] {
         if let Some(v) = base.trailer.get(key) {
             trailer.set(key, v.clone());
         }

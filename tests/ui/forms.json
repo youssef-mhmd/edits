@@ -1,0 +1,24 @@
+[
+  {
+    "eval": "window.__f = (k) => document.querySelectorAll('.flayer > .field')[k]; window.__type = (el, text) => { el.focus(); el.value = text; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); }; __viewer.setZoom(1.5); __viewer.goToPage(0);",
+    "wait": 1500,
+    "log": "[(__viewer.fields ?? []).length, document.querySelectorAll('.flayer > .field').length]"
+  },
+  {
+    "eval": "__type(__f(0), 'محمد علي Mohamed Ali')",
+    "wait": 1200,
+    "log": "[!!document.querySelector('.tab .dirty'), __viewer.fields[0].value]"
+  },
+  { "eval": "__f(0).focus()", "wait": 100 },
+  { "key": "Tab", "vk": 9, "wait": 300, "log": "[document.activeElement.className, document.activeElement.dataset.fid === __f(1).dataset.fid]" },
+  { "eval": "__type(document.activeElement, 'Example Trading Co.')", "wait": 800 },
+  {
+    "eval": "[...document.querySelectorAll('.flayer > .fbox')][0].click()",
+    "wait": 1200,
+    "log": "[...document.querySelectorAll('.flayer > .fbox')].slice(0, 3).map(b => b.getAttribute('aria-checked'))",
+    "shot": "forms-1-filled"
+  },
+  { "key": "z", "code": "KeyZ", "ctrl": true, "vk": 90, "eval": "document.activeElement.blur()", "wait": 1500, "log": "[...document.querySelectorAll('.flayer > .fbox')].slice(0, 1).map(b => b.getAttribute('aria-checked'))" },
+  { "key": "y", "code": "KeyY", "ctrl": true, "vk": 89, "wait": 1500, "log": "[...document.querySelectorAll('.flayer > .fbox')].slice(0, 1).map(b => b.getAttribute('aria-checked'))" },
+  { "key": "s", "code": "KeyS", "ctrl": true, "vk": 83, "wait": 2500, "log": "[!!document.querySelector('.tab .dirty'), document.querySelector('.toast')?.textContent ?? 'no error']", "shot": "forms-2-saved" }
+]

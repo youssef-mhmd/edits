@@ -63,15 +63,15 @@ impl EditState {
     /// Starts a session for a newly opened document. `pages` is the page
     /// count the renderer found; editing is refused if edits reads the file
     /// differently (damaged files), so changes never land on the wrong page.
-    pub fn opened(&self, doc: DocId, path: PathBuf, pages: u32) {
-        let slot = match Session::open(&path) {
+    pub fn opened(&self, doc: DocId, path: PathBuf, pages: u32, password: &str) {
+        let slot = match Session::open_with_password(&path, password) {
             Ok(s) if s.page_count().ok() == Some(pages) => Ok(s),
             Ok(_) => {
                 Err("this file is damaged, so it cannot be changed. Save a copy with Save As, then edit the copy."
                     .into())
             }
             Err(edits_edit::pdf::PdfError::Encrypted) => {
-                Err("this file is encrypted. Changing encrypted files comes in a later version.".into())
+                Err("this file's protection could not be opened for changes".into())
             }
             Err(e) => Err(format!("this file cannot be changed: {e}")),
         };
@@ -178,6 +178,9 @@ pub struct NewAnnot {
     /// A picture file for a picture stamp.
     #[serde(default)]
     pub image_path: Option<String>,
+    /// Or the picture itself, as a PNG or JPEG data URL (signatures).
+    #[serde(default)]
+    pub image_data: Option<String>,
 }
 
 fn twelve() -> f32 {
@@ -399,8 +402,15 @@ pub async fn annot_add(app: tauri::AppHandle, doc: DocId, annot: NewAnnot) -> Re
             Kind::Stamp => {
                 let r = n.rect.ok_or("no place")?;
                 let p = user(engine, doc, n.page, vec![[r[0], r[1]], [r[2], r[3]], [0.0, 0.0], [1.0, 1.0]])?;
-                if let Some(path) = n.image_path {
-                    let bytes = std::fs::read(&path).map_err(|e| format!("cannot read {path}: {e}"))?;
+                let picture = match (n.image_path, n.image_data) {
+                    (Some(path), _) => Some(std::fs::read(&path).map_err(|e| format!("cannot read {path}: {e}"))?),
+                    (None, Some(url)) => {
+                        let b64 = url.split_once(',').map_or(url.as_str(), |(_, d)| d);
+                        Some(edits_edit::image::decode_base64(b64).ok_or("the picture could not be read")?)
+                    }
+                    _ => None,
+                };
+                if let Some(bytes) = picture {
                     let img = edits_edit::image::PdfImage::from_bytes(&bytes)?;
                     // A dragged box, or a third of the page wide around the click.
                     let (pw, ph) = ((p[3][0] - p[2][0]).abs(), (p[3][1] - p[2][1]).abs());
@@ -612,6 +622,16 @@ pub fn recovery_discard(edits: tauri::State<'_, EditState>, doc: DocId) {
     if let Some(Ok(s)) = edits.lock().get(&doc) {
         forget_recovery(s.path());
     }
+}
+
+/// Draws every annotation and form field into the pages (undoable until saved).
+#[tauri::command]
+pub async fn flatten_doc(app: tauri::AppHandle, doc: DocId) -> Result<Changed, String> {
+    with_session(app, doc, move |engine, s| {
+        s.flatten().map_err(|e| e.to_string())?;
+        changed(engine, doc, s, Vec::new(), None)
+    })
+    .await
 }
 
 /// The Windows user name, as the default author of annotations.

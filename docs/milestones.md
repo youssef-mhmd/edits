@@ -118,7 +118,7 @@ Done when: annotations saved by edits show correctly in Chrome, Edge and Acrobat
 Notes so far:
 - Design: edits reads files with its own lazy reader (`edits-bench pdf-check`: all 73 intact corpus files match PDFium) and writes incremental updates itself; PDFium shows file + update, so the screen is what will be saved.
 - Save (`edits-bench save FILE`): 12 ms (0.1 MB), 19 ms (1.4 MB, 2,000 pages), 21 ms (10 MB), 96 ms (107 MB book); 380 ms for 506 MB (copying the file). An edit shows in 1-16 ms. PDFium's own full rewrite takes 252 ms for 10 MB and 12 s for 506 MB.
-- Encrypted files cannot be annotated yet (M10); damaged files only after Save As.
+- Encrypted files cannot be annotated yet (M10); damaged files only after Save As. *(Encrypted files: done in M4.)*
 - Status 2026-11-27: every item is in. Save is 13 ms (0.1 MB), 29 ms (10 MB), 95 ms (107 MB): the ≤ 200 ms target passes for these; a 506 MB file takes 380 ms (copying it). Benchmarks unchanged from M1 (memory still over target, see m1-results.md). UI scenarios: tests/ui/annotate.json, draw.json, tools.json, then restore.json for crash recovery. Remaining for "done when": the owner checks `edits-bench annot-demo` output in Acrobat Reader, Chrome and Edge.
 - Saved files checked with a second, independent renderer (MuPDF, local check only): shapes, ink and arrows draw from edits' appearance streams.
 - Done 2026-11-27: the owner checked the `annot-demo` sample in Acrobat Reader, Chrome and Edge; every annotation shows correctly. M2 is complete.
@@ -145,13 +145,23 @@ Notes:
 
 ## M4: Forms and signing (release 0.4)
 
-- [ ] Fill text fields, checkboxes, radio buttons, dropdowns, lists; tab order
-- [ ] Arabic input in fields
-- [ ] Fill and sign on flat forms: type anywhere, tick and cross marks
-- [ ] Signature by drawing, typing or image; saved signatures
-- [ ] Flatten forms and annotations
+- [x] Fill text fields, checkboxes, radio buttons, dropdowns, lists; tab order *(fields shown tinted over the page; Tab and Shift+Tab follow the file's order, page by page; undo, recovery and save as for annotations)*
+- [x] Arabic input in fields *(typed in the page; the field's appearance is drawn by edits with shaped Arabic in the bundled font; right-to-left text aligns right)*
+- [x] Fill and sign on flat forms: type anywhere, tick and cross marks *(text tool; ✓ and ✗ tools; click, or drag for the size)*
+- [x] Signature by drawing, typing or image; saved signatures *(a transparent PNG trimmed to the ink, placed as a picture stamp; up to 12 kept on this computer in signatures.json)*
+- [x] Flatten forms and annotations *(every appearance drawn into its page; links kept; undoable until saved)*
 
 Done when: a set of real government and bank forms from the corpus can be filled, signed, saved and reopened in Acrobat Reader with values intact.
+
+Notes:
+- Forms corpus (corpus/files/forms, downloaded blank public forms): IRS W-9, W-4, 1040, SS-4, 8822; USCIS I-9, AR-11, G-1145 (AR-11 and G-1145 are protected with AES-128 and permissions); US Treasury savings bond forms SAV 1048 and SAV 5336 (radio buttons). No Egyptian forms yet: to add when the owner has blank ones.
+- Protected files: edits' reader and writers now handle the standard security handler (RC4, AES-128, AES-256; `pdf/crypt.rs`, crates aes, md-5 and sha2, already in the tree through lopdf). Files that open without a password (permissions only), and files opened with their password, can be annotated, organised and filled; updates and whole-file rewrites keep the same protection. This also does part of M10 (editing protected files); setting or removing a password is still M10.
+- Field appearances: edits draws text, combo box and list appearances itself (one font subset shared by all fields in an update), honouring /DA size and colour, /Q, /MaxLen comb cells, multiline, /MK background and border, /MK /R rotation. Boxes without "on" appearances get a drawn tick or dot. XFA is removed from a form once a field changes. Field formatting and calculation scripts are not run.
+- `edits-bench forms-check [DIR] [KEEP]`: fills every field of every corpus form (Arabic and Latin text, ticks, last radio button, first choice), saves a copy, reads it back (values must match), renders every page in PDFium, then flattens and checks again. All 11 forms pass; a second, independent reader agrees on the values. Filling 199 fields of the 1040 takes 0.8 s in all (about 4 ms each).
+- UI: `tests/ui/forms.json` (W-9: type Arabic, Tab, tick, undo, redo, save), `tests/ui/sign.json` (tick, cross, drawn signature, flatten, save), `tests/ui/password.json` (now also annotates and saves a password-protected file).
+- Benchmarks: no change from 0.3 when built and measured alternately on the same day (10 MB file: first page 530 ms vs 537–545 ms; zoom p95 56 ms vs 62–73 ms). Memory still over target as before.
+- Owner check done 2026-11-27: the filled, protected, flattened and signed samples show correctly in Acrobat Reader. M4 is complete.
+- Also in 0.4: the window draws its own title bar (tabs beside the window buttons, as in Windows Terminal) and the toolbars are flat.
 
 ## M5: OCR and PDFs from scans (release 0.5)
 

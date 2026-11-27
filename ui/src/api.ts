@@ -257,6 +257,45 @@ export const recoveryOffer = (doc: number) => invoke<number | null>("recovery_of
 export const recoveryRestore = (doc: number) => invoke<Changed>("recovery_restore", { doc });
 export const recoveryDiscard = (doc: number) => invoke<void>("recovery_discard", { doc });
 
+// ------------------------------------------------------------------ forms
+
+export type FieldValue =
+  | { type: "text"; value: string }
+  | { type: "state"; value: string | null }
+  | { type: "choice"; value: string[] };
+
+/** A form field; `boxes` are its widgets (page fractions: left, top, right, bottom). */
+export interface FormField {
+  id: [number, number];
+  name: string;
+  tooltip: string;
+  kind: "text" | "check" | "radio" | "combo" | "list" | "other";
+  read_only: boolean;
+  required: boolean;
+  multiline: boolean;
+  password: boolean;
+  comb: boolean;
+  editable: boolean;
+  multi_select: boolean;
+  no_toggle_off: boolean;
+  max_len: number | null;
+  options: [string, string][];
+  value: FieldValue;
+  font_size: number;
+  color: number[];
+  align: number;
+  boxes: { page: number; rect: number[]; on: string | null }[];
+}
+
+export const flattenDoc = (doc: number) => invoke<Changed>("flatten_doc", { doc });
+/** Saved signatures: PNG data URLs. */
+export const loadSignatures = () => invoke<string[]>("load_signatures");
+export const saveSignatures = (list: string[]) => invoke<void>("save_signatures", { list });
+export const pictureDataUrl = (path: string) => invoke<string>("picture_data_url", { path });
+export const formFields = (doc: number) => invoke<FormField[]>("form_fields", { doc });
+export const fieldSet = (doc: number, id: [number, number], value: FieldValue) =>
+  invoke<Changed>("field_set", { doc, id, value });
+
 // ------------------------------------------------------------------ pages
 
 export const pagesMove = (doc: number, pages: number[], before: number) =>
@@ -355,6 +394,8 @@ export interface NewAnnot {
   font_size?: number;
   label?: string;
   image_path?: string;
+  /** Or the picture itself as a data URL (signatures). */
+  image_data?: string;
 }
 
 export interface AnnotStyle {

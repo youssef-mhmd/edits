@@ -88,10 +88,8 @@ pub(super) struct Foreign {
 
 impl Foreign {
     pub(super) fn open(path: &Path) -> Result<Self, PdfError> {
+        // Files with a password fail here (Encrypted); permissions-only ones open.
         let file = PdfFile::open(Arc::new(FileSource::open(path)?))?;
-        if file.is_encrypted() {
-            return Err(PdfError::Encrypted);
-        }
         Ok(Foreign {
             path: path.to_path_buf(),
             file,
@@ -184,19 +182,19 @@ pub(crate) fn page_dict<S: Source>(f: &PdfFile<S>, page: Ref) -> Result<Dict, Pd
 }
 
 /// Objects being written, numbered from the base file's size up.
-struct Out {
-    objects: Vec<(Ref, Obj)>,
-    next: u32,
+pub(super) struct Out {
+    pub objects: Vec<(Ref, Obj)>,
+    pub next: u32,
 }
 
 impl Out {
-    fn reserve(&mut self) -> Ref {
+    pub fn reserve(&mut self) -> Ref {
         let r = (self.next, 0);
         self.next += 1;
         r
     }
 
-    fn add(&mut self, o: Obj) -> Ref {
+    pub fn add(&mut self, o: Obj) -> Ref {
         let r = self.reserve();
         self.objects.push((r, o));
         r
@@ -238,7 +236,7 @@ impl Session {
 
     /// True if the pages differ from the base file's.
     pub fn pages_changed(&self) -> bool {
-        !is_identity(self.order(), self.base_pages)
+        self.flattened || !is_identity(self.order(), self.base_pages)
     }
 
     fn set_order(&mut self, new: Vec<PageSlot>) -> Result<(), EditError> {
@@ -488,7 +486,7 @@ impl Session {
     /// `export`: a new file of these pages only, without bookmarks.
     pub(super) fn objects_for(&self, order: &[PageSlot], export: bool) -> Result<Planned, PdfError> {
         let base_pages = self.base.pages()?;
-        let structural = export || !is_identity(order, base_pages.len() as u32);
+        let structural = export || self.flattened || !is_identity(order, base_pages.len() as u32);
         // Pages (keys) whose annotations change.
         let mut touched: BTreeSet<u32> =
             self.entries.values().filter(|e| e.changed()).map(|e| e.annot().page).collect();
@@ -563,6 +561,7 @@ impl Session {
                             || s.turn != 0
                             || s.crop.is_some()
                             || !s.decor.is_empty()
+                            || self.flattened
                             || touched.contains(&s.key);
                         let dict = if write { page_dict(&self.base, r)? } else { raw };
                         (r, dict, list, write)
@@ -720,6 +719,9 @@ impl Session {
             self.draw_decor(&decorated, &mut out);
         }
 
+        // The catalog, when something changes it.
+        let mut cat: Option<Dict> = None;
+        let page_list: Vec<Ref> = kids.iter().filter_map(Obj::as_ref).collect();
         if structural && let Some(root) = root_ref {
             let mut d = self.base.get(root)?.as_dict().cloned().unwrap_or_default();
             d.set(b"Type", Obj::name("Pages"));
@@ -729,14 +731,9 @@ impl Session {
             out.objects.push((root, Obj::Dict(d)));
             if export {
                 // A new file of some pages: no bookmarks or document-wide structure.
-                if let (Some(cr), Some(c)) = (catalog_ref, catalog.as_dict()) {
-                    let mut c = c.clone();
-                    for k in
-                        [&b"Outlines"[..], b"StructTreeRoot", b"MarkInfo", b"PageLabels", b"OpenAction", b"PageMode"]
-                    {
-                        c.remove(k);
-                    }
-                    out.objects.push((cr, Obj::Dict(c)));
+                let c = cat.get_or_insert_with(|| catalog.as_dict().cloned().unwrap_or_default());
+                for k in [&b"Outlines"[..], b"StructTreeRoot", b"MarkInfo", b"PageLabels", b"OpenAction", b"PageMode"] {
+                    c.remove(k);
                 }
             } else {
                 self.retarget_outline(order, &base_pages, &page_refs, &mut out)?;
@@ -744,15 +741,21 @@ impl Session {
                 // would name the wrong pages, so readers number pages plainly.
                 let moved = order.len() != base_pages.len()
                     || order.iter().enumerate().any(|(i, s)| s.key != i as u32 || !s.owner());
-                if moved
-                    && let (Some(cr), Some(c)) = (catalog_ref, catalog.as_dict())
-                    && c.get(b"PageLabels").is_some()
-                {
-                    let mut c = c.clone();
-                    c.remove(b"PageLabels");
-                    out.objects.push((cr, Obj::Dict(c)));
+                if moved && catalog.as_dict().is_some_and(|c| c.get(b"PageLabels").is_some()) {
+                    cat.get_or_insert_with(|| catalog.as_dict().cloned().unwrap_or_default()).remove(b"PageLabels");
                 }
             }
+        }
+        self.field_objects(&mut out, &mut cat, catalog.as_dict())?;
+        if self.flattened {
+            self.flatten_pages(&mut out, &page_list)?;
+            // No fields are left to fill.
+            if catalog.as_dict().is_some_and(|c| c.get(b"AcroForm").is_some()) {
+                cat.get_or_insert_with(|| catalog.as_dict().cloned().unwrap_or_default()).remove(b"AcroForm");
+            }
+        }
+        if let (Some(cr), Some(c)) = (catalog_ref, cat) {
+            out.objects.push((cr, Obj::Dict(c)));
         }
         Ok((out.objects, assigned))
     }

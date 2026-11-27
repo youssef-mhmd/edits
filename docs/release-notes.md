@@ -1,5 +1,16 @@
 # Release notes
 
+## 0.4.0 (2026-11-27)
+
+Forms and signing.
+
+- Fill in forms: text boxes, tick boxes, choice buttons, drop-down lists and lists, in Arabic or English. Tab moves to the next field.
+- Forms without fields: type anywhere, and add ✓ and ✗ marks.
+- Sign: draw your signature, type it, or use a picture (white paper is made transparent). Signatures are kept on this computer for next time.
+- Flatten: make annotations and filled-in fields a fixed part of the page.
+- A cleaner window: tabs sit in the title bar beside the window buttons, and the toolbars are flat.
+- Protected PDFs (with a password, or only restricted, as many government forms are) can now be filled, annotated and organised; they stay protected when saved.
+
 ## 0.3.0 (2026-11-27)
 
 Organise pages.

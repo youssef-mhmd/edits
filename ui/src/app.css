@@ -10,7 +10,7 @@
   --bg: #2b2b2e;
   --bar: #1e1e21;
   --tabbar: #151517;
-  --tab-hover: #222226;
+  --tab-hover: #2e2e34;
   --text: #e6e6e6;
   --muted: #9a9aa0;
   --accent: #4a90d9;
@@ -30,7 +30,17 @@
   --note-bg: #1f2e40;
   --note-border: #35577d;
   --paper: #fff;
+  --field-tint: rgb(80 140 240 / 0.13);
+  --field-hover: rgb(80 140 240 / 0.24);
+  --field-required: rgb(220 60 60 / 0.6);
+  --field-text: #000;
   --on-accent: #fff;
+  --tab-active: #3b3b43;
+  --tab-shadow: rgb(0 0 0 / 0.5);
+  --tab-border: rgb(255 255 255 / 0.1);
+  --tab-text: #c4c4ca;
+  --field-bg: #2a2a2f;
+  --close-hover: #c42b1c;
   color-scheme: dark;
 }
 
@@ -38,7 +48,7 @@
   --bg: #e4e4e9;
   --bar: #f7f7f9;
   --tabbar: #dadae0;
-  --tab-hover: #e8e8ed;
+  --tab-hover: #e2e2e8;
   --text: #1d1d22;
   --muted: #5f5f68;
   --accent: #2f6fbd;
@@ -58,7 +68,17 @@
   --note-bg: #e3eefb;
   --note-border: #9fc1e8;
   --paper: #fff;
+  --field-tint: rgb(80 140 240 / 0.13);
+  --field-hover: rgb(80 140 240 / 0.24);
+  --field-required: rgb(220 60 60 / 0.6);
+  --field-text: #000;
   --on-accent: #fff;
+  --tab-active: #ffffff;
+  --tab-shadow: rgb(0 0 0 / 0.18);
+  --tab-border: #c6c6cf;
+  --tab-text: #3d3d45;
+  --field-bg: #ececf1;
+  --close-hover: #c42b1c;
   color-scheme: light;
 }
 
@@ -136,6 +156,67 @@ body,
 
 .marks > .sel {
   background: rgb(60 130 230 / 0.35);
+}
+
+/* Form fields (viewer.ts drawFields): a tint over each field; the page's own
+   drawing shows the value until the field is being typed into. */
+.page > .flayer {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+  transform-origin: center;
+}
+
+.flayer > .field {
+  position: absolute;
+  margin: 0;
+  padding: 0 2px;
+  border: none;
+  border-radius: 0;
+  background: var(--field-tint);
+  color: transparent;
+  caret-color: transparent;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  pointer-events: auto;
+  outline: none;
+  resize: none;
+  overflow: hidden;
+  box-sizing: border-box;
+  cursor: text;
+}
+
+.flayer > .field.required {
+  box-shadow: inset 0 0 0 1px var(--field-required);
+}
+
+.flayer > .field:hover {
+  background: var(--field-hover);
+}
+
+.flayer > .field:focus,
+.flayer > .fchoice:focus {
+  background: var(--paper);
+  color: var(--field-text);
+  caret-color: auto;
+  box-shadow: 0 0 0 2px var(--accent);
+  z-index: 1;
+}
+
+.flayer > .fbox {
+  cursor: pointer;
+}
+
+.flayer > .fbox:focus {
+  background: var(--field-hover);
+  color: transparent;
+}
+
+.flayer > .fchoice {
+  cursor: pointer;
+}
+
+.flayer > .fchoice:not(:focus) {
+  appearance: none;
 }
 
 /* Annotation selection and drawing (viewer.ts drawAnnotLayer). */

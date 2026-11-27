@@ -6,6 +6,7 @@
 
 mod bench;
 mod edit;
+mod forms;
 mod nav;
 mod pages;
 #[cfg(windows)]
@@ -101,6 +102,7 @@ async fn open_doc(
     let initial = state.initial.clone();
     let initial_path = state.args.file.clone();
     let opened_path = path.clone().map(PathBuf::from).or_else(|| initial_path.clone());
+    let pw = password.clone();
     let info = tauri::async_runtime::spawn_blocking(move || match path {
         Some(p) => engine.open(p, password),
         // A password for the launch file: open it again with the password.
@@ -117,7 +119,7 @@ async fn open_doc(
     // Index the text in the background, so search can start at once.
     text::start_index(indexer, info.doc);
     if let Some(p) = opened_path {
-        edits.opened(info.doc, p, info.page_count);
+        edits.opened(info.doc, p, info.page_count, pw.as_deref().unwrap_or(""));
     }
     Ok(info)
 }
@@ -257,6 +259,12 @@ pub fn run() {
             pages::pages_export,
             pages::pages_split,
             pages::merge_files,
+            forms::form_fields,
+            forms::field_set,
+            edit::flatten_doc,
+            state::load_signatures,
+            state::save_signatures,
+            state::picture_data_url,
         ])
         .setup(move |app| {
             *setup_ms_hook.lock().unwrap_or_else(|e| e.into_inner()) = unix_ms();

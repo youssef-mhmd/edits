@@ -505,3 +505,41 @@ pub fn pages_demo(src: &Path, out: &Path) -> Res<bool> {
     println!("{}: {} pages, {len} bytes", out.display(), s.page_count()?);
     Ok(true)
 }
+
+/// Lists a document's form fields as edits reads them.
+pub fn fields(path: &Path) -> Res<bool> {
+    use edits_edit::pdf::{FileSource, PdfFile};
+    let f = PdfFile::open(FileSource::open(path)?)?;
+    let fields = edits_edit::forms::read_fields(&f)?;
+    let mut kinds = std::collections::BTreeMap::new();
+    for fl in &fields {
+        *kinds.entry(format!("{:?}", fl.kind)).or_insert(0) += 1;
+    }
+    println!("{}: {} fields {kinds:?}", path.display(), fields.len());
+    for fl in fields.iter().take(6) {
+        println!(
+            "  {:?} {} = {:?} ({} widgets, page {})",
+            fl.kind,
+            fl.name,
+            fl.value,
+            fl.widgets.len(),
+            fl.widgets[0].page
+        );
+    }
+    Ok(true)
+}
+
+/// Prints object `num` of a file as edits' reader sees it (decrypted).
+pub fn object(path: &Path, num: u32) -> Res<bool> {
+    use edits_edit::pdf::{FileSource, Obj, PdfFile};
+    let pw = crate::check::password_for(path).unwrap_or_default();
+    let f = PdfFile::open_with_password(FileSource::open(path)?, pw.as_bytes())?;
+    match f.get((num, 0))? {
+        Obj::Stream(d, data) => {
+            let decoded = edits_edit::pdf::file::decode(&d, &data).map(|v| v.len());
+            println!("stream {d:?}: {} bytes stored, decoded {decoded:?}", data.len());
+        }
+        o => println!("{o:?}"),
+    }
+    Ok(true)
+}
