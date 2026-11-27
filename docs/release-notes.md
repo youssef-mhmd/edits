@@ -1,6 +1,6 @@
 # Release notes
 
-## 0.3.0 (not yet released)
+## 0.3.0 (2026-11-27)
 
 Organise pages.
 

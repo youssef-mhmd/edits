@@ -141,7 +141,7 @@ Notes:
 - Done 2026-11-27: on the 1,000-page, 506 MB file the grid opens with a longest frame of 42 ms; moving pages 21 ms; saving 7 ms (the work runs off the interface thread). `tests/ui/organize-large.json`.
 - `edits-bench pages-check`: on every editable corpus file (72), move, turn, copy, delete and insert, then check the result as shown and as saved (page count, sizes, text, every page renders). All pass; exporting pages of the 5 damaged fuzzed files is refused rather than done badly. 1,000 pages: 52 ms for the five steps, 0.8 s to write 506 MB anew.
 - Benchmarks unchanged from M2 (`edits-bench app`: images-10mb and large-1000p-500mb pass everything but memory, as before).
-- Owner check: `edits-bench pages-demo` output (`edits-pages-sample.pdf`) in Acrobat Reader, Chrome and Edge.
+- Owner check done 2026-11-27: the `edits-bench pages-demo` sample shows correctly in Acrobat Reader, Chrome and Edge. M3 is complete.
 
 ## M4: Forms and signing (release 0.4)
 
