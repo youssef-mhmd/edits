@@ -473,3 +473,35 @@ pub fn annot_demo(src: &Path, out: &Path) -> Res<bool> {
     println!("wrote {}", out.display());
     Ok(true)
 }
+
+/// Writes a sample of page changes to `out` for checking in other readers:
+/// page 2 turned, page 1 copied and cropped, a blank page, page numbers and
+/// headers in Arabic and English, and a watermark.
+pub fn pages_demo(src: &Path, out: &Path) -> Res<bool> {
+    use edits_edit::{Decor, Session};
+    std::fs::copy(src, out)?;
+    let mut s = Session::open(out)?;
+    let n = s.page_count()?;
+    let all = |s: &Session| (0..s.page_count().unwrap_or(0)).collect::<Vec<u32>>();
+    if n > 1 {
+        s.rotate_pages(&[1], 1)?;
+    }
+    s.duplicate_pages(&[0])?;
+    s.crop_pages(&[(1, None)])?;
+    s.insert_blank(s.page_count()?, 595.0, 842.0, 1)?;
+    let base: Decor = serde_json::from_str("{}")?;
+    s.decorate_pages(
+        &all(&s),
+        Decor {
+            header: ["edits".into(), String::new(), "تقرير شهري".into()],
+            footer: [String::new(), "صفحة {n} من {total}".into(), "Page {n} of {total}".into()],
+            arabic_digits: false,
+            color: [0.1, 0.2, 0.5],
+            ..base.clone()
+        },
+    )?;
+    s.decorate_pages(&all(&s), Decor { watermark: "مسودة DRAFT".into(), ..base })?;
+    let len = s.save(out)?;
+    println!("{}: {} pages, {len} bytes", out.display(), s.page_count()?);
+    Ok(true)
+}

@@ -29,6 +29,8 @@
   --toast-text: #ffd2cc;
   --note-bg: #1f2e40;
   --note-border: #35577d;
+  --paper: #fff;
+  --on-accent: #fff;
   color-scheme: dark;
 }
 
@@ -55,6 +57,8 @@
   --toast-text: #7a1c14;
   --note-bg: #e3eefb;
   --note-border: #9fc1e8;
+  --paper: #fff;
+  --on-accent: #fff;
   color-scheme: light;
 }
 

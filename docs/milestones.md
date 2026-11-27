@@ -125,16 +125,23 @@ Notes so far:
 
 ## M3: Organize pages (release 0.3)
 
-- [ ] Page grid view with drag reorder and multi-select
-- [ ] Rotate, delete, duplicate, extract
-- [ ] Insert from another PDF, blank pages, images
-- [ ] Merge files; new PDF from pages of several files
-- [ ] Split by range, every N pages, bookmarks
-- [ ] Crop pages
-- [ ] Page numbers, headers, footers, watermarks
-- [ ] Bookmarks and links stay correct after page changes
+- [x] Page grid view with drag reorder and multi-select *("Pages" button; click, Ctrl-click, Shift-click, Ctrl+A; drag, or Ctrl+arrow to move)*
+- [x] Rotate, delete, duplicate, extract *(copies keep their annotations and links; Extract saves the chosen pages as a new PDF)*
+- [x] Insert from another PDF, blank pages, images *(Insert menu in the grid, or drop files on it; pictures get a page of their own shape, at most A4)*
+- [x] Merge files; new PDF from pages of several files *("Combine PDFs" on the start screen; or insert pages from other files, then Save As or Extract)*
+- [x] Split by range, every N pages, bookmarks
+- [x] Crop pages *(margins in mm, chosen or all pages; Remove crop)*
+- [x] Page numbers, headers, footers, watermarks *(drawn into the page content with the bundled Arabic font, upright on turned pages; Arabic-Indic digits optional)*
+- [x] Bookmarks and links stay correct after page changes *(pages keep their objects, so bookmarks and links follow them; bookmarks to deleted pages go to the nearest page left; links to deleted pages lead nowhere; page labels are dropped when pages move)*
 
 Done when: a 1,000-page file can be reordered and saved without the interface freezing.
+
+Notes:
+- Design: the session keeps the page list (`crates/edits-edit/src/session/pages.rs`) and rewrites the page tree's top node in the same incremental update as annotations, so undo, crash recovery and the overlay shown on screen work as for annotations. Pages from other files are copied in with what they use (`pdf/copy.rs`). Saving after a deletion writes the whole file anew with only the objects still in use (`copy::rewrite`), so deleted pages' content is gone; a damaged file that cannot be rewritten is appended to instead. After a save that changed pages, undo history starts again.
+- Done 2026-11-27: on the 1,000-page, 506 MB file the grid opens with a longest frame of 42 ms; moving pages 21 ms; saving 7 ms (the work runs off the interface thread). `tests/ui/organize-large.json`.
+- `edits-bench pages-check`: on every editable corpus file (72), move, turn, copy, delete and insert, then check the result as shown and as saved (page count, sizes, text, every page renders). All pass; exporting pages of the 5 damaged fuzzed files is refused rather than done badly. 1,000 pages: 52 ms for the five steps, 0.8 s to write 506 MB anew.
+- Benchmarks unchanged from M2 (`edits-bench app`: images-10mb and large-1000p-500mb pass everything but memory, as before).
+- Owner check done 2026-11-27: the `edits-bench pages-demo` sample shows correctly in Acrobat Reader, Chrome and Edge. M3 is complete.
 
 ## M4: Forms and signing (release 0.4)
 

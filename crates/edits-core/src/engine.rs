@@ -647,6 +647,31 @@ impl Engine {
         self.reopen(doc, None, Some(tail))
     }
 
+    /// Like [`Engine::set_overlay`], for an update that adds, removes,
+    /// reorders or reshapes pages: the text index is dropped and the new
+    /// page list is returned.
+    pub fn set_overlay_pages(&self, doc: DocId, tail: Option<std::sync::Arc<Vec<u8>>>) -> Result<DocInfo, EngineError> {
+        if tail.is_some() {
+            self.shared.lock().sources.remove(&doc);
+        }
+        let start = Instant::now();
+        self.call(doc, CONTROL_PRIORITY, move |od| {
+            od.tail = tail;
+            od.texts.clear();
+            od.reload()?;
+            let (page_count, pages, broken_pages) = page_sizes(od);
+            Ok(DocInfo { doc, page_count, pages, broken_pages, open_us: start.elapsed().as_micros() as u64 })
+        })
+    }
+
+    /// The document's pages as they are now.
+    pub fn info(&self, doc: DocId) -> Result<DocInfo, EngineError> {
+        self.call(doc, CONTROL_PRIORITY, move |od| {
+            let (page_count, pages, broken_pages) = page_sizes(od);
+            Ok(DocInfo { doc, page_count, pages, broken_pages, open_us: 0 })
+        })
+    }
+
     /// Opens the document's file again after it was replaced by a save, or
     /// with `path`, the file it was saved as. Any update shown is dropped.
     pub fn reload(&self, doc: DocId, path: Option<PathBuf>) -> Result<(), EngineError> {
@@ -915,25 +940,7 @@ impl RenderThread {
     fn open(&mut self, id: DocId, path: &Path, password: Option<&str>) -> Result<DocInfo, EngineError> {
         let start = Instant::now();
         let od = self.docs.load(id, path, password)?;
-        // Read sizes one page at a time: a single broken page must not make
-        // the whole document unreadable. It gets the previous page's size
-        // (or A4) and is reported, and rendering it later fails on its own.
-        let page_count = od.page_count;
-        let mut pages = Vec::with_capacity(page_count as usize);
-        let mut broken_pages = Vec::new();
-        for i in 0..page_count {
-            let size = od
-                .doc
-                .pages()
-                .page_size(i as pdfium_render::prelude::PdfPageIndex)
-                .ok()
-                .map(|r| PageSize { w: r.width().value, h: r.height().value })
-                .filter(|s| s.w.is_finite() && s.h.is_finite() && s.w >= 1.0 && s.h >= 1.0);
-            pages.push(size.unwrap_or_else(|| {
-                broken_pages.push(i);
-                pages.last().copied().unwrap_or(PageSize { w: 595.0, h: 842.0 })
-            }));
-        }
+        let (page_count, pages, broken_pages) = page_sizes(od);
         let source = DocSource {
             path: path.to_path_buf(),
             password: password.map(str::to_string),
@@ -943,4 +950,27 @@ impl RenderThread {
         self.shared.lock().sources.insert(id, source);
         Ok(DocInfo { doc: id, page_count, pages, broken_pages, open_us: start.elapsed().as_micros() as u64 })
     }
+}
+
+/// Page count and sizes. Read one page at a time: a single broken page must
+/// not make the whole document unreadable. It gets the previous page's size
+/// (or A4) and is reported, and rendering it later fails on its own.
+fn page_sizes(od: &OpenDoc) -> (u32, Vec<PageSize>, Vec<u32>) {
+    let page_count = od.page_count;
+    let mut pages = Vec::with_capacity(page_count as usize);
+    let mut broken_pages = Vec::new();
+    for i in 0..page_count {
+        let size = od
+            .doc
+            .pages()
+            .page_size(i as pdfium_render::prelude::PdfPageIndex)
+            .ok()
+            .map(|r| PageSize { w: r.width().value, h: r.height().value })
+            .filter(|s| s.w.is_finite() && s.h.is_finite() && s.w >= 1.0 && s.h >= 1.0);
+        pages.push(size.unwrap_or_else(|| {
+            broken_pages.push(i);
+            pages.last().copied().unwrap_or(PageSize { w: 595.0, h: 842.0 })
+        }));
+    }
+    (page_count, pages, broken_pages)
 }

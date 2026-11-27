@@ -1,0 +1,31 @@
+[
+  {
+    "eval": "window.__sizes = () => __viewer.info.pages.map(p => `${Math.round(p.w)}x${Math.round(p.h)}`).join(' '); window.__hbtn = (label) => [...document.querySelectorAll('header button')].find(b => b.textContent.trim() === label); window.__obtn = (label) => [...document.querySelectorAll('.obar button, .menu-list button')].find(b => b.textContent.trim().startsWith(label) || b.getAttribute('aria-label') === label); window.__cell = (i, opts = {}) => document.querySelector(`.cell[data-page=\"${i}\"]`).dispatchEvent(new MouseEvent('click', { bubbles: true, ...opts })); window.__dragTo = (from, to, after) => { const dt = new DataTransfer(); const a = document.querySelector(`.cell[data-page=\"${from}\"]`); const b = document.querySelector(`.cell[data-page=\"${to}\"]`); const r = b.getBoundingClientRect(); a.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt })); b.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt, clientX: after ? r.right - 5 : r.left + 5, clientY: r.top + 20 })); b.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt })); };",
+    "wait": 800,
+    "log": "__sizes()"
+  },
+  {
+    "eval": "__hbtn('Pages').click()",
+    "wait": 1200,
+    "log": "[document.querySelectorAll('.cell').length, document.querySelectorAll('.cell img').length, document.querySelector('.obar .count').textContent.trim()]",
+    "shot": "organize-1-grid"
+  },
+  { "eval": "__cell(0)", "wait": 100, "log": "document.querySelector('.obar .count').textContent.trim()" },
+  { "key": "ArrowRight", "ctrl": true, "vk": 39, "wait": 1200, "log": "[__sizes(), !!document.querySelector('.tab .dirty')]" },
+  { "eval": "__obtn('Turn right').click()", "wait": 1200, "log": "__sizes()" },
+  { "eval": "__cell(2); __cell(3, { shiftKey: true }); __obtn('Copy').click()", "wait": 1200, "log": "__sizes()" },
+  { "eval": "__cell(0); __obtn('Delete').click()", "wait": 1200, "log": "__sizes()" },
+  { "eval": "__dragTo(6, 0, false)", "wait": 1200, "log": "[__sizes(), document.querySelector('.obar .count').textContent.trim()]" },
+  { "eval": "__cell(0); __obtn('Insert').click()", "wait": 200 },
+  { "eval": "__obtn('Blank page').click()", "wait": 1200, "log": "__sizes()", "shot": "organize-2-changed" },
+  { "eval": "__obtn('Numbers and headers').click()", "wait": 400, "log": "!!document.querySelector('.dlg')" },
+  {
+    "eval": "[...document.querySelectorAll('.dlg button')].find(b => b.textContent.trim() === 'صفحة 1 من 9').click(); const wm = document.querySelector('.dlg input[placeholder]'); wm.value = 'DRAFT'; wm.dispatchEvent(new Event('input', { bubbles: true }));",
+    "wait": 200
+  },
+  { "eval": "document.querySelector('.dlg .primary').click()", "wait": 2500, "log": "[!!document.querySelector('.dlg'), document.querySelector('.toast')?.textContent ?? 'no error']", "shot": "organize-3-numbers" },
+  { "key": "z", "code": "KeyZ", "ctrl": true, "vk": 90, "wait": 1500, "log": "__sizes()" },
+  { "key": "y", "code": "KeyY", "ctrl": true, "vk": 89, "wait": 1500, "log": "__sizes()" },
+  { "eval": "__obtn('Done').click()", "wait": 1500, "log": "[!!document.querySelector('.organize'), __viewer.pageCount, __viewer.currentPage()]", "shot": "organize-4-reading" },
+  { "key": "s", "code": "KeyS", "ctrl": true, "vk": 83, "wait": 3000, "log": "[!!document.querySelector('.tab .dirty'), document.querySelector('.toast')?.textContent ?? 'no error', __sizes()]" }
+]

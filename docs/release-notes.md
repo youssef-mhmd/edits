@@ -1,5 +1,17 @@
 # Release notes
 
+## 0.3.0 (2026-11-27)
+
+Organise pages.
+
+- A page grid ("Pages"): choose pages with click, Ctrl-click or Shift-click, and drag them to a new place.
+- Turn, copy and delete pages. Copies keep their annotations and links.
+- Insert blank pages, pictures, or pages from another PDF (or drop files on the grid).
+- Crop pages by margins.
+- Add page numbers, headers, footers and a watermark, in Arabic or English, with Arabic-Indic digits if you like.
+- Extract pages to a new file; split a document every N pages, by page ranges or at its bookmarks; combine several PDFs into one.
+- Everything can be undone. When pages are deleted, saving writes the file anew so their content is really gone.
+
 ## 0.2.0 (2026-11-27)
 
 Annotate and mark up.

@@ -4,7 +4,7 @@
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { open as pickFile, save as pickSavePath } from "@tauri-apps/plugin-dialog";
-  import { openUrl } from "@tauri-apps/plugin-opener";
+  import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
   import {
     annotAdd,
     annotMove,
@@ -19,7 +19,22 @@
     recoveryOffer,
     recoveryRestore,
     recoveryDiscard,
+    mergeFiles,
+    pagesCrop,
+    pagesDecorate,
+    pagesDelete,
+    pagesDuplicate,
+    pagesExport,
+    pagesInsertBlank,
+    pagesInsertImages,
+    pagesInsertPdf,
+    pagesMove,
+    pagesRotate,
+    pagesSplit,
+    pagesUndecorate,
     type Changed,
+    type Decor,
+    type DocInfo,
     type AnnotStyle,
     type AnnotView,
     type MarkupKind,
@@ -36,6 +51,11 @@
   import { Viewer, type FitMode, type Tool, type ViewMode } from "./viewer";
   import { benchNoFile, benchWithFile } from "./bench";
   import Sidebar from "./Sidebar.svelte";
+  import PageGrid, { type InsertKind } from "./PageGrid.svelte";
+  import CropDialog from "./CropDialog.svelte";
+  import SplitDialog, { type Part } from "./SplitDialog.svelte";
+  import MergeDialog from "./MergeDialog.svelte";
+  import HeaderDialog from "./HeaderDialog.svelte";
   import SearchBar from "./SearchBar.svelte";
   import PrintDialog from "./PrintDialog.svelte";
   import SettingsDialog from "./SettingsDialog.svelte";
@@ -64,6 +84,8 @@
     dirty: boolean;
     canUndo: boolean;
     canRedo: boolean;
+    /** Showing the page grid (organise pages) instead of the document. */
+    organize: boolean;
   }
 
   const STAMP_WORDS = ["معتمد", "مسودة", "سري", "APPROVED", "DRAFT", "CONFIDENTIAL", "RECEIVED"];
@@ -151,6 +173,13 @@
   // Set while asking whether to save a document before it closes.
   let unsavedPrompt: { tab: Tab; resolve: (r: "save" | "discard" | "cancel") => void } | null = $state(null);
   let settingsOpen = $state(false);
+  // Organise pages: open dialogs, with the pages they act on.
+  let cropFor: number[] | null = $state(null);
+  let headerFor: number[] | null = $state(null);
+  let splitOpen = $state(false);
+  let mergeFiles_: string[] | null = $state(null);
+  /** A message with a file to show in its folder. */
+  let notice: { text: string; path: string | null } | null = $state(null);
   let theme: Theme = $state("system");
   let language: LangSetting = $state("system");
   let checkUpdates = $state(true);
@@ -238,32 +267,12 @@
           dirty: false,
           canUndo: false,
           canRedo: false,
+          organize: false,
         },
       ];
       activeId = id;
       await tick();
-      const v = new Viewer(hosts[id], info, transport);
-      v.onUpdate = () => refresh(id);
-      v.onExternalLink = (uri) => void openUrl(uri).catch((e) => (error = String(e)));
-      v.onSelection = (has) => {
-        if (id === activeId) hasSel = has;
-      };
-      v.onAnnotOpen = (a) => {
-        if (a.kind === "note" || a.kind === "freetext") noteEdit = { a, text: a.contents };
-      };
-      v.onAnnotSelect = (a) => {
-        if (id === activeId) selAnnot = a;
-      };
-      v.tool = tool;
-      v.drawStyle = { width: drawWidth, fill: drawFill ? drawColor : null, color: drawColor };
-      v.editor = {
-        add: (n) =>
-          runEdit(id, (doc) => annotAdd(doc, { ...n, color: drawColor, author: author || defaultAuthor })),
-        move: (aid, dx, dy) => runEdit(id, (doc) => annotMove(doc, aid, dx, dy)),
-        resize: (aid, rect) => runEdit(id, (doc) => annotResize(doc, aid, rect)),
-        // Note, text, stamp and picture tools: interface not built yet (M2, in progress).
-        place: (tl, page, rect) => void place(id, tl, page, rect),
-      };
+      const v = makeViewer(id, info);
       const saved = bench ? undefined : lastView(realPath);
       if (saved) v.restore(saved);
       patchTab(id, { viewer: v });
@@ -289,6 +298,59 @@
       }
       return null;
     }
+  }
+
+  /** A viewer for tab `id` showing `info`, wired to the toolbar and the editor. */
+  function makeViewer(id: number, info: DocInfo): Viewer {
+    const v = new Viewer(hosts[id], info, transport);
+    v.onUpdate = () => refresh(id);
+    v.onExternalLink = (uri) => void openUrl(uri).catch((e) => (error = String(e)));
+    v.onSelection = (has) => {
+      if (id === activeId) hasSel = has;
+    };
+    v.onAnnotOpen = (a) => {
+      if (a.kind === "note" || a.kind === "freetext") noteEdit = { a, text: a.contents };
+    };
+    v.onAnnotSelect = (a) => {
+      if (id === activeId) selAnnot = a;
+    };
+    v.tool = tool;
+    v.drawStyle = { width: drawWidth, fill: drawFill ? drawColor : null, color: drawColor };
+    v.editor = {
+      add: (n) =>
+        runEdit(id, (doc) => annotAdd(doc, { ...n, color: drawColor, author: author || defaultAuthor })),
+      move: (aid, dx, dy) => runEdit(id, (doc) => annotMove(doc, aid, dx, dy)),
+      resize: (aid, rect) => runEdit(id, (doc) => annotResize(doc, aid, rect)),
+      // Note, text, stamp and picture tools: interface not built yet (M2, in progress).
+      place: (tl, page, rect) => void place(id, tl, page, rect),
+    };
+    return v;
+  }
+
+  /**
+   * Shows tab `tabId`'s document anew after its pages changed: a new viewer
+   * at the same place, and the bookmarks read again (their pages moved).
+   */
+  function replaceViewer(tabId: number, info: DocInfo) {
+    const tab = tabs.find((t) => t.id === tabId);
+    const old = tab?.viewer;
+    if (!tab || !old) return;
+    const state = old.viewState();
+    const isActive = tabId === activeId;
+    old.destroy();
+    const v = makeViewer(tabId, info);
+    v.restore(state);
+    if (!isActive) v.setActive(false);
+    patchTab(tabId, { viewer: v });
+    if (isActive) {
+      (window as unknown as { __viewer: Viewer }).__viewer = v;
+      selAnnot = null;
+      hasSel = false;
+      refresh(tabId);
+    }
+    void loadOutline(info.doc)
+      .then((o) => patchTab(tabId, { outline: o }))
+      .catch(() => patchTab(tabId, { outline: [] }));
   }
 
   /** Asks whether to save `tab`'s changes. */
@@ -339,6 +401,11 @@
   /** Takes in a change: undo state on the tab, pages drawn again, annotations read again. */
   function changed(tabId: number, c: Changed) {
     patchTab(tabId, { dirty: c.status.dirty, canUndo: c.status.can_undo, canRedo: c.status.can_redo });
+    if (c.info) {
+      replaceViewer(tabId, c.info);
+      if (tabId === activeId && comments !== null) void loadComments();
+      return;
+    }
     const v = tabs.find((t) => t.id === tabId)?.viewer;
     v?.invalidatePages(c.pages);
     v?.reloadAnnots(c.pages);
@@ -503,6 +570,114 @@
     if (!o || !v) return;
     if (keep) void runEdit(o.tabId, (doc) => recoveryRestore(doc));
     else void recoveryDiscard(v.info.doc).catch(() => {});
+  }
+
+  // ------------------------------------------------------- organise pages
+
+  function setOrganize(on: boolean, page?: number) {
+    const tab = active;
+    if (!tab?.viewer) return;
+    if (!on && page !== undefined) tab.viewer.navigate(page);
+    patchTab(tab.id, { organize: on });
+    if (!on) void tick().then(() => viewer?.scroller.focus());
+  }
+
+  /** Runs a page change on the active tab; errors show and are passed on. */
+  async function pageEdit(fn: (doc: number) => Promise<Changed>): Promise<void> {
+    const tab = active;
+    if (!tab?.viewer || busy) return;
+    let failed: unknown = null;
+    await runEdit(tab.id, async (doc) => {
+      try {
+        return await fn(doc);
+      } catch (e) {
+        failed = e;
+        throw e;
+      }
+    });
+    if (failed) throw failed;
+  }
+
+  const pdfFilter = [{ name: "PDF", extensions: ["pdf"] }];
+  const baseName = (path: string) => nameOf(path).replace(/\.pdf$/i, "");
+
+  async function insertPages(kind: InsertKind, at: number) {
+    const v = viewer;
+    if (!v) return;
+    if (kind === "blank") {
+      // The size of the page before (or after) it.
+      const p = v.info.pages[Math.max(0, Math.min(at - 1, v.info.page_count - 1))];
+      await pageEdit((doc) => pagesInsertBlank(doc, at, p.w, p.h, 1)).catch(() => {});
+    } else if (kind === "images") {
+      const r = await pickFile({
+        multiple: true,
+        filters: [{ name: t("tool.image"), extensions: ["png", "jpg", "jpeg"] }],
+      });
+      const paths = Array.isArray(r) ? r : typeof r === "string" ? [r] : [];
+      if (paths.length) await pageEdit((doc) => pagesInsertImages(doc, at, paths)).catch(() => {});
+    } else {
+      const r = await pickFile({ multiple: true, filters: pdfFilter });
+      const paths = Array.isArray(r) ? r : typeof r === "string" ? [r] : [];
+      // Each file's pages after the previous file's.
+      for (const p of paths.reverse()) await pageEdit((doc) => pagesInsertPdf(doc, at, p)).catch(() => {});
+    }
+  }
+
+  async function extractPages(pages: number[]) {
+    const tab = active;
+    const v = viewer;
+    if (!tab || !v || !pages.length) return;
+    const sorted = [...pages].sort((a, b) => a - b);
+    const label =
+      sorted.length === 1 ? `${sorted[0] + 1}` : `${sorted[0] + 1}-${sorted[sorted.length - 1] + 1}`;
+    const dir = tab.path.slice(0, tab.path.length - nameOf(tab.path).length);
+    const target = await pickSavePath({
+      defaultPath: `${dir}${baseName(tab.path)} (${t("org.pagesWord")} ${label}).pdf`,
+      filters: pdfFilter,
+    });
+    if (!target) return;
+    try {
+      const out = await pagesExport(v.info.doc, sorted, normalize(target));
+      notice = { text: t("org.extracted", { n: sorted.length, name: nameOf(out) }), path: out };
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function splitPages(parts: Part[]): Promise<string[] | null> {
+    const tab = active;
+    const v = viewer;
+    if (!tab || !v) return null;
+    const folder = await pickFile({ directory: true, title: t("split.folder") });
+    if (typeof folder !== "string") return null;
+    const written = await pagesSplit(v.info.doc, parts, normalize(folder));
+    notice = { text: t("split.done", { n: written.length }), path: written[0] ?? null };
+    return written;
+  }
+
+  async function cropPages(pages: number[], margins: number[] | null) {
+    const v = viewer;
+    if (!v) return;
+    const crops = pages.map((page) => {
+      if (!margins) return { page, margins: null };
+      const p = v.info.pages[page];
+      const [l, tp, r, b] = margins;
+      return { page, margins: [l / p.w, tp / p.h, r / p.w, b / p.h] };
+    });
+    await pageEdit((doc) => pagesCrop(doc, crops));
+  }
+
+  async function combine(paths: string[]): Promise<boolean> {
+    const first = paths[0];
+    const dir = first.slice(0, first.length - nameOf(first).length);
+    const target = await pickSavePath({
+      defaultPath: `${dir}${t("merge.defaultName")}.pdf`,
+      filters: pdfFilter,
+    });
+    if (!target) return false;
+    const out = await mergeFiles(paths, normalize(target));
+    await open(out);
+    return true;
   }
 
   function saveNote() {
@@ -740,8 +915,18 @@
   function onKey(e: KeyboardEvent) {
     // Dialogs handle their own keys.
     if (printOpen || settingsOpen || pwPrompt || unsavedPrompt || noteEdit || restoreOffer) return;
+    if (cropFor || headerFor || splitOpen || mergeFiles_) return;
     const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement;
-    const action = appKeyAction(e) ?? (viewer && !typing ? keyAction(e, viewer) : null);
+    // The page grid handles its own keys; only undo and redo pass through.
+    const organizing = !!active?.organize;
+    const undoRedo = (k: KeyboardEvent): (() => void) | null => {
+      if (k.ctrlKey && !k.shiftKey && k.key.toLowerCase() === "z") return () => undo();
+      if (k.ctrlKey && (k.key.toLowerCase() === "y" || (k.shiftKey && k.key.toLowerCase() === "z")))
+        return () => redo();
+      return null;
+    };
+    const action =
+      appKeyAction(e) ?? (viewer && !typing ? (organizing ? undoRedo(e) : keyAction(e, viewer)) : null);
     if (action) {
       e.preventDefault();
       action();
@@ -826,7 +1011,20 @@
 
     const unlistenDrop = getCurrentWebview().onDragDropEvent((e) => {
       if (e.payload.type === "drop") {
-        for (const p of e.payload.paths.filter((p) => p.toLowerCase().endsWith(".pdf"))) void open(p);
+        const paths = e.payload.paths;
+        if (active?.organize && viewer) {
+          // Into the document being organised, at the end.
+          const at = viewer.info.page_count;
+          const pdfs = paths.filter((p) => p.toLowerCase().endsWith(".pdf"));
+          const pics = paths.filter((p) => /\.(png|jpe?g)$/i.test(p));
+          void (async () => {
+            if (pics.length) await pageEdit((doc) => pagesInsertImages(doc, at, pics)).catch(() => {});
+            for (const p of pdfs.reverse())
+              await pageEdit((doc) => pagesInsertPdf(doc, at, p)).catch(() => {});
+          })();
+          return;
+        }
+        for (const p of paths.filter((p) => p.toLowerCase().endsWith(".pdf"))) void open(p);
       }
     });
     // Files from a second launch (double-click while running).
@@ -910,6 +1108,14 @@
         title={t("bar.panelTitle")}
       >
         {t("bar.panel")}
+      </button>
+      <button
+        class:active={active?.organize}
+        aria-pressed={!!active?.organize}
+        onclick={() => setOrganize(!active?.organize, active?.organize ? page : undefined)}
+        title={t("org.openTitle")}
+      >
+        {t("org.open")}
       </button>
       <button
         disabled={!canBack}
@@ -1047,7 +1253,7 @@
       ⚙
     </button>
   </header>
-  {#if viewer}
+  {#if viewer && !active?.organize}
     <div class="ctxbar" role="toolbar" aria-label={t("ctx.label")}>
       {#if !selAnnot || selAnnot.kind !== "other"}
         <span class="marks" role="group" aria-label={t("mark.color")}>
@@ -1187,8 +1393,8 @@
     </div>
   {/if}
   <div class="body">
-    {#if viewer && active && sidebarOpen}
-      {#key active.id}
+    {#if viewer && active && sidebarOpen && !active.organize}
+      {#key viewer}
         <Sidebar
           {viewer}
           {page}
@@ -1205,8 +1411,67 @@
       {#each tabs as tab (tab.id)}
         <div class="doc" hidden={tab.id !== activeId} bind:this={hosts[tab.id]}></div>
       {/each}
-      {#if viewer && active && findOpen}
+      {#if viewer && active?.organize}
         {#key active.id}
+          <PageGrid
+            {viewer}
+            start={page}
+            onmove={(pages, before) => pageEdit((doc) => pagesMove(doc, pages, before)).catch(() => {})}
+            onrotate={(pages, q) => pageEdit((doc) => pagesRotate(doc, pages, q)).catch(() => {})}
+            ondelete={(pages) => pageEdit((doc) => pagesDelete(doc, pages)).catch(() => {})}
+            onduplicate={(pages) => pageEdit((doc) => pagesDuplicate(doc, pages)).catch(() => {})}
+            oninsert={insertPages}
+            onextract={(pages) => void extractPages(pages)}
+            oncrop={(pages) => (cropFor = pages)}
+            onheader={(pages) => (headerFor = pages)}
+            onsplit={() => (splitOpen = true)}
+            ondone={(p) => setOrganize(false, p)}
+          />
+        {/key}
+      {/if}
+      {#if cropFor && viewer}
+        <CropDialog
+          chosen={cropFor}
+          count={viewer.pageCount}
+          oncrop={cropPages}
+          onclose={() => (cropFor = null)}
+        />
+      {/if}
+      {#if headerFor && viewer}
+        <HeaderDialog
+          chosen={headerFor}
+          count={viewer.pageCount}
+          ondecorate={(pages, d: Decor) => pageEdit((doc) => pagesDecorate(doc, pages, d))}
+          onremove={(pages) => pageEdit((doc) => pagesUndecorate(doc, pages))}
+          onclose={() => (headerFor = null)}
+        />
+      {/if}
+      {#if splitOpen && viewer && active}
+        <SplitDialog
+          count={viewer.pageCount}
+          outline={active.outline}
+          base={baseName(active.path)}
+          onsplit={splitPages}
+          onclose={() => (splitOpen = false)}
+        />
+      {/if}
+      {#if mergeFiles_}
+        <MergeDialog initial={mergeFiles_} onmerge={combine} onclose={() => (mergeFiles_ = null)} />
+      {/if}
+      {#if notice}
+        <div class="toast notice" role="status">
+          <span dir="auto">{notice.text}</span>
+          {#if notice.path}
+            {@const where = notice.path}
+            <button onclick={() => void revealItemInDir(where).catch((e) => (error = String(e)))}>
+              {t("org.showFile")}
+            </button>
+          {/if}
+          <button onclick={() => (notice = null)} aria-label={t("app.dismiss")}>×</button>
+        </div>
+      {/if}
+      {#if viewer && active && findOpen && !active.organize}
+        {#key viewer}
           <SearchBar
             bind:this={findBar}
             {viewer}
@@ -1256,6 +1521,7 @@
           <div class="start-inner">
             <p>
               <button class="primary" onclick={openDialog}>{t("app.openPdf")}</button>
+              <button onclick={() => (mergeFiles_ = [])}>{t("merge.open")}</button>
               <span class="hint">{t("app.openHint")}</span>
             </p>
             {#if recent.length}
@@ -1682,6 +1948,12 @@
     color: var(--toast-text);
     z-index: 11;
   }
+  .toast.notice {
+    background: var(--bar);
+    border-color: var(--border);
+    color: var(--text);
+  }
+
   .start {
     position: absolute;
     inset: 0;

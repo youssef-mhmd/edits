@@ -248,25 +248,39 @@ pub struct PdfText {
 /// Prepares text for a PDF: `blocks` are (layout, left, top, width, colour);
 /// each line is aligned within `width` (right for right-to-left paragraphs).
 pub fn pdf_text(blocks: &[(&Layout, f32, f32, f32, [f32; 3])], res: &str) -> PdfText {
+    let (mut ops, font) = pdf_text_parts(&[blocks], res);
+    PdfText { ops: ops.pop().unwrap_or_default(), font }
+}
+
+/// Text blocks: (layout, left, top, width, colour).
+pub type Blocks<'a> = [(&'a Layout, f32, f32, f32, [f32; 3])];
+
+/// Like [`pdf_text`] for several content streams (pages) that share one
+/// font: the operators of each part, and the font they all use.
+pub fn pdf_text_parts(parts: &[&Blocks], res: &str) -> (Vec<String>, PdfFont) {
     let f = font();
     let mut remap = subsetter::GlyphRemapper::new();
     let mut to_uni: BTreeMap<u16, String> = BTreeMap::new();
-    let mut ops = String::new();
-    for (layout, left, top, width, color) in blocks {
-        ops += &format!("BT\n{} {} {} rg\n/{res} {} Tf\n", n(color[0]), n(color[1]), n(color[2]), n(layout.size));
-        let mut baseline = top - layout.first_baseline();
-        for line in &layout.lines {
-            let x0 = if line.rtl { left + width - line.width } else { *left };
-            for g in &line.glyphs {
-                let new = remap.remap(g.id);
-                if !g.text.is_empty() {
-                    to_uni.entry(new).or_insert_with(|| g.text.clone());
+    let mut all = Vec::with_capacity(parts.len());
+    for blocks in parts {
+        let mut ops = String::new();
+        for (layout, left, top, width, color) in blocks.iter() {
+            ops += &format!("BT\n{} {} {} rg\n/{res} {} Tf\n", n(color[0]), n(color[1]), n(color[2]), n(layout.size));
+            let mut baseline = top - layout.first_baseline();
+            for line in &layout.lines {
+                let x0 = if line.rtl { left + width - line.width } else { *left };
+                for g in &line.glyphs {
+                    let new = remap.remap(g.id);
+                    if !g.text.is_empty() {
+                        to_uni.entry(new).or_insert_with(|| g.text.clone());
+                    }
+                    ops += &format!("1 0 0 1 {} {} Tm <{new:04X}> Tj\n", n(x0 + g.x), n(baseline + g.y));
                 }
-                ops += &format!("1 0 0 1 {} {} Tm <{new:04X}> Tj\n", n(x0 + g.x), n(baseline + g.y));
+                baseline -= layout.leading;
             }
-            baseline -= layout.leading;
+            ops += "ET\n";
         }
-        ops += "ET\n";
+        all.push(ops);
     }
     // Glyph 0 (.notdef) is always kept by the subsetter.
     let program = subsetter::subset(FONT_DATA, 0, &remap).unwrap_or_else(|_| FONT_DATA.to_vec());
@@ -278,15 +292,9 @@ pub fn pdf_text(blocks: &[(&Layout, f32, f32, f32, [f32; 3])], res: &str) -> Pdf
             (new as u16, adv * 1000.0 / f.units_per_em)
         })
         .collect();
-    PdfText {
-        ops,
-        font: PdfFont {
-            program,
-            widths,
-            to_unicode: cmap(&to_uni),
-            base_font: format!("{}+{FONT_NAME}", tag(&to_uni)),
-        },
-    }
+    let font =
+        PdfFont { program, widths, to_unicode: cmap(&to_uni), base_font: format!("{}+{FONT_NAME}", tag(&to_uni)) };
+    (all, font)
 }
 
 /// A six-letter subset tag derived from the glyphs used.

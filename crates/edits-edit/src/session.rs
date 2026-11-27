@@ -16,6 +16,11 @@ use crate::model::{Annot, AnnotId};
 use crate::pdf::object::encode_text;
 use crate::pdf::{Dict, FileSource, Obj, PdfError, PdfFile, Ref, write};
 
+mod decor;
+mod pages;
+pub use decor::Decor;
+pub use pages::{PageSlot, PageSrc};
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct Entry {
     /// Every version this annotation has had; `cur` is the one in effect.
@@ -24,6 +29,10 @@ struct Entry {
     alive: bool,
     /// Its object in the base file and the version the base holds.
     base: Option<(Ref, usize)>,
+    /// For a copy of an annotation from the file (a duplicated page): the
+    /// original, whose dictionary the copy starts from.
+    #[serde(default)]
+    template: Option<Ref>,
 }
 
 impl Entry {
@@ -48,7 +57,16 @@ type Planned = (Vec<(Ref, Obj)>, HashMap<AnnotId, Ref>);
 enum Command {
     Add(AnnotId),
     Remove(AnnotId),
-    Change { id: AnnotId, from: usize, to: usize },
+    Change {
+        id: AnnotId,
+        from: usize,
+        to: usize,
+    },
+    /// The page list changed (indexes into `Session::orders`).
+    Pages {
+        from: usize,
+        to: usize,
+    },
 }
 
 /// An annotation as the interface sees it.
@@ -75,6 +93,8 @@ pub enum EditError {
     Io(#[from] std::io::Error),
     #[error("no annotation {0}")]
     Unknown(AnnotId),
+    #[error("{0}")]
+    Pages(String),
 }
 
 /// Unsaved work, written after every change so that it survives a crash
@@ -93,6 +113,19 @@ pub struct Recovery {
     next_id: AnnotId,
     next_seq: u64,
     saved_at: u64,
+    #[serde(default)]
+    orders: Vec<Vec<PageSlot>>,
+    #[serde(default)]
+    order_at: usize,
+    #[serde(default)]
+    next_key: u32,
+    #[serde(default)]
+    images: Vec<Arc<crate::image::PdfImage>>,
+    /// Other files pages were taken from, and the pages copied, in order.
+    #[serde(default)]
+    foreign: Vec<(PathBuf, Vec<u32>)>,
+    #[serde(default)]
+    decors: Vec<Decor>,
 }
 
 fn stamp_of(path: &Path) -> Option<(u64, u128)> {
@@ -119,6 +152,20 @@ pub struct Session {
     assigned: HashMap<AnnotId, Ref>,
     /// The update to append to the base; None when there is nothing to save.
     tail: Option<Arc<Vec<u8>>>,
+    /// The base file's page count.
+    base_pages: u32,
+    /// Every page list the document has had; `orders[order_at]` is now.
+    orders: Vec<Vec<PageSlot>>,
+    order_at: usize,
+    /// Page key -> index now.
+    pos: HashMap<u32, u32>,
+    next_key: u32,
+    /// Pictures of inserted picture pages.
+    images: Vec<Arc<crate::image::PdfImage>>,
+    foreign: Vec<pages::Foreign>,
+    /// Headers, footers and watermarks added to pages.
+    decors: Vec<Decor>,
+    layout_changed: bool,
 }
 
 fn open_base(path: &Path) -> Result<PdfFile<Arc<FileSource>>, PdfError> {
@@ -133,9 +180,11 @@ impl Session {
     /// Opens `path` for editing. Fails for encrypted files and for files
     /// whose structure edits cannot read.
     pub fn open(path: &Path) -> Result<Self, PdfError> {
-        Ok(Session {
+        let base = open_base(path)?;
+        let n = base.pages()?.len() as u32;
+        let mut s = Session {
             path: path.to_path_buf(),
-            base: open_base(path)?,
+            base,
             entries: BTreeMap::new(),
             imported: HashSet::new(),
             undo: Vec::new(),
@@ -145,16 +194,28 @@ impl Session {
             saved_at: 0,
             assigned: HashMap::new(),
             tail: None,
-        })
+            base_pages: n,
+            orders: vec![pages::identity(n)],
+            order_at: 0,
+            pos: HashMap::new(),
+            next_key: n,
+            images: Vec::new(),
+            foreign: Vec::new(),
+            decors: Vec::new(),
+            layout_changed: false,
+        };
+        s.reindex();
+        Ok(s)
     }
 
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    /// The base file's page count, to check against the renderer's.
+    /// The document's page count now (at first the base file's, to check
+    /// against the renderer's).
     pub fn page_count(&self) -> Result<u32, PdfError> {
-        Ok(self.base.pages()?.len() as u32)
+        Ok(self.order().len() as u32)
     }
 
     /// The base file, shared for reading by the renderer.
@@ -191,6 +252,12 @@ impl Session {
             next_id: self.next_id,
             next_seq: self.next_seq,
             saved_at: self.saved_at,
+            orders: self.orders.clone(),
+            order_at: self.order_at,
+            next_key: self.next_key,
+            images: self.images.clone(),
+            foreign: self.foreign.iter().map(|f| (f.path.clone(), f.copied.clone())).collect(),
+            decors: self.decors.clone(),
         })
     }
 
@@ -211,38 +278,86 @@ impl Session {
         self.next_id = r.next_id;
         self.next_seq = r.next_seq;
         self.saved_at = r.saved_at;
+        if !r.orders.is_empty() {
+            // Pages from other files are copied again, in the same order, so
+            // they get the same numbers.
+            let mut foreign = Vec::new();
+            for (path, copied) in &r.foreign {
+                let mut f = pages::Foreign::open(path)?;
+                for p in copied {
+                    f.copy_page(*p)?;
+                }
+                foreign.push(f);
+            }
+            self.foreign = foreign;
+            self.orders = r.orders;
+            self.order_at = r.order_at.min(self.orders.len() - 1);
+            self.next_key = r.next_key;
+            self.images = r.images;
+            self.decors = r.decors;
+            self.reindex();
+            self.layout_changed = true;
+        }
         self.rebuild()?;
-        let pages: BTreeSet<u32> = self.entries.values().flat_map(|e| e.versions.iter().map(|a| a.page)).collect();
+        let pages: BTreeSet<u32> =
+            self.entries.values().flat_map(|e| e.versions.iter().filter_map(|a| self.index_of(a.page))).collect();
         Ok(pages.into_iter().collect())
     }
 
-    /// Reads the annotations of `page` from the base file, once.
+    /// Reads the annotations of the page at `page` from the base file, once.
+    /// (Pages inserted from elsewhere have none to read.)
     pub fn import(&mut self, page: u32) -> Result<(), PdfError> {
-        if !self.imported.insert(page) {
+        let Some(slot) = self.order().get(page as usize) else {
+            return Err(PdfError::Damaged(format!("no page {page}")));
+        };
+        let key = slot.key;
+        if slot.src != PageSrc::Base(key) || !self.imported.insert(key) {
             return Ok(());
         }
-        let (_, _, annots) = self.base.page_annots(page)?;
+        let (_, _, annots) = self.base.page_annots(key)?;
         for o in annots {
             let Some(r) = o.as_ref() else { continue };
             let Ok(obj) = self.base.get(r) else { continue };
-            let Some(a) = obj.as_dict().and_then(|d| Annot::from_dict(page, d)) else { continue };
+            let Some(a) = obj.as_dict().and_then(|d| Annot::from_dict(key, d)) else { continue };
             self.next_id += 1;
-            self.entries.insert(self.next_id, Entry { versions: vec![a], cur: 0, alive: true, base: Some((r, 0)) });
+            self.entries.insert(
+                self.next_id,
+                Entry { versions: vec![a], cur: 0, alive: true, base: Some((r, 0)), template: None },
+            );
         }
         Ok(())
     }
 
-    /// The annotations on `page` now (import it first).
+    /// `a` with its page given as the index it is at now.
+    fn shown(&self, a: &Annot) -> Option<Annot> {
+        let mut a = a.clone();
+        a.page = self.index_of(a.page)?;
+        Some(a)
+    }
+
+    /// The annotations on the page at `page` now (import it first).
     pub fn list(&self, page: u32) -> Vec<Listed> {
+        let Some(key) = self.key_of(page) else { return Vec::new() };
         self.entries
             .iter()
-            .filter(|(_, e)| e.alive && e.annot().page == page)
-            .map(|(id, e)| Listed { id: *id, annot: e.annot().clone() })
+            .filter(|(_, e)| e.alive && e.annot().page == key)
+            .filter_map(|(id, e)| Some(Listed { id: *id, annot: self.shown(e.annot())? }))
             .collect()
     }
 
-    pub fn get(&self, id: AnnotId) -> Option<&Annot> {
-        self.entries.get(&id).filter(|e| e.alive).map(Entry::annot)
+    /// An annotation, with its page as an index.
+    pub fn get(&self, id: AnnotId) -> Option<Annot> {
+        self.entries.get(&id).filter(|e| e.alive).and_then(|e| self.shown(e.annot()))
+    }
+
+    /// Page keys to indexes, for pages still in the document.
+    fn indexes(&self, keys: &[u32]) -> Vec<u32> {
+        pages_of(&keys.iter().filter_map(|k| self.index_of(*k)).collect::<Vec<_>>())
+    }
+
+    fn keyed(&self, mut a: Annot) -> Result<Annot, EditError> {
+        a.page = self.key_of(a.page).ok_or(EditError::Pages(format!("there is no page {}", a.page + 1)))?;
+        Ok(a)
     }
 
     fn push(&mut self, c: Command) {
@@ -254,9 +369,10 @@ impl Session {
     /// Adds an annotation; returns its id and the page to draw again.
     pub fn add(&mut self, a: Annot) -> Result<(AnnotId, u32), EditError> {
         let page = a.page;
+        let a = self.keyed(a)?;
         self.next_id += 1;
         let id = self.next_id;
-        self.entries.insert(id, Entry { versions: vec![a], cur: 0, alive: true, base: None });
+        self.entries.insert(id, Entry { versions: vec![a], cur: 0, alive: true, base: None, template: None });
         self.push(Command::Add(id));
         self.rebuild()?;
         Ok((id, page))
@@ -266,48 +382,56 @@ impl Session {
     pub fn remove(&mut self, id: AnnotId) -> Result<u32, EditError> {
         let e = self.entries.get_mut(&id).filter(|e| e.alive).ok_or(EditError::Unknown(id))?;
         e.alive = false;
-        let page = e.annot().page;
+        let key = e.annot().page;
         self.push(Command::Remove(id));
         self.rebuild()?;
-        Ok(page)
+        Ok(self.index_of(key).unwrap_or(0))
     }
 
     /// Replaces an annotation with a changed version; returns the pages to
     /// draw again (it may have moved between pages).
     pub fn change(&mut self, id: AnnotId, a: Annot) -> Result<Vec<u32>, EditError> {
+        let a = self.keyed(a)?;
         let e = self.entries.get_mut(&id).filter(|e| e.alive).ok_or(EditError::Unknown(id))?;
         if *e.annot() == a {
             return Ok(Vec::new());
         }
-        let pages = pages_of(&[e.annot().page, a.page]);
+        let keys = [e.annot().page, a.page];
         let from = e.cur;
         e.versions.push(a);
         e.cur = e.versions.len() - 1;
         let to = e.cur;
         self.push(Command::Change { id, from, to });
         self.rebuild()?;
-        Ok(pages)
+        Ok(self.indexes(&keys))
     }
 
     /// Undoes the last command; returns the pages to draw again.
     pub fn undo(&mut self) -> Result<Vec<u32>, EditError> {
         let Some((seq, c)) = self.undo.pop() else { return Ok(Vec::new()) };
         self.redo.push((seq, c));
-        let pages = self.apply(c, true);
+        let keys = self.apply(c, true);
         self.rebuild()?;
-        Ok(pages)
+        Ok(self.indexes(&keys))
     }
 
     pub fn redo(&mut self) -> Result<Vec<u32>, EditError> {
         let Some((seq, c)) = self.redo.pop() else { return Ok(Vec::new()) };
         self.undo.push((seq, c));
-        let pages = self.apply(c, false);
+        let keys = self.apply(c, false);
         self.rebuild()?;
-        Ok(pages)
+        Ok(self.indexes(&keys))
     }
 
+    /// Applies or reverts `c`; returns the page keys to draw again.
     fn apply(&mut self, c: Command, backwards: bool) -> Vec<u32> {
         match c {
+            Command::Pages { from, to } => {
+                self.order_at = if backwards { from } else { to };
+                self.reindex();
+                self.layout_changed = true;
+                Vec::new()
+            }
             Command::Add(id) | Command::Remove(id) => {
                 let adding = matches!(c, Command::Add(_)) != backwards;
                 let Some(e) = self.entries.get_mut(&id) else { return Vec::new() };
@@ -333,74 +457,7 @@ impl Session {
 
     /// The objects an update must write, and the objects new annotations get.
     fn objects(&self) -> Result<Planned, PdfError> {
-        let pages: BTreeSet<u32> = self.entries.values().filter(|e| e.changed()).map(|e| e.annot().page).collect();
-        // A changed page also loses the annotations moved away from it.
-        let mut pages = pages;
-        for e in self.entries.values() {
-            if let Some((_, v)) = e.base
-                && e.versions[v].page != e.annot().page
-            {
-                pages.insert(e.versions[v].page);
-            }
-        }
-        let mut objects = Vec::new();
-        let mut assigned = HashMap::new();
-        let mut next = self.base.size;
-        for page in pages {
-            let (page_ref, mut page_dict, annots) = self.base.page_annots(page)?;
-            // Base annotations now deleted or on another page leave this page.
-            let leaving: HashSet<Ref> = self
-                .entries
-                .values()
-                .filter_map(|e| {
-                    let (r, _) = e.base?;
-                    (!e.alive || e.annot().page != page).then_some(r)
-                })
-                .collect();
-            let mut list: Vec<Obj> = annots
-                .into_iter()
-                .filter(|o| !o.as_ref().is_some_and(|r| leaving.contains(&r) || self.removes_popup(r, &leaving)))
-                .collect();
-            for (id, e) in &self.entries {
-                let a = e.annot();
-                if !e.alive || a.page != page || !e.changed() {
-                    continue;
-                }
-                let (r, base_dict) = match e.base {
-                    Some((r, _)) => (r, self.base.get(r)?.as_dict().cloned()),
-                    None => {
-                        let r = (next, 0);
-                        next += 1;
-                        assigned.insert(*id, r);
-                        (r, None)
-                    }
-                };
-                // An annotation that came from another page joins this one's list.
-                if !list.iter().any(|o| o.as_ref() == Some(r)) {
-                    list.push(Obj::Ref(r));
-                }
-                let ap = if a.own_ap && a.drawable() {
-                    let mut extra = Vec::new();
-                    let form = appearance(a, &mut |o| {
-                        let r = (next, 0);
-                        next += 1;
-                        extra.push((r, o));
-                        r
-                    });
-                    let ar = (next, 0);
-                    next += 1;
-                    objects.extend(extra);
-                    objects.push((ar, form));
-                    Some(ar)
-                } else {
-                    None
-                };
-                objects.push((r, Obj::Dict(annot_dict(a, base_dict, page_ref, ap))));
-            }
-            page_dict.set(b"Annots", Obj::Array(list));
-            objects.push((page_ref, Obj::Dict(page_dict)));
-        }
-        Ok((objects, assigned))
+        self.objects_for(self.order(), false)
     }
 
     /// True if `r` is the pop-up window of an annotation that is leaving.
@@ -421,6 +478,45 @@ impl Session {
     /// Save As) and makes that the base. Returns the bytes written.
     pub fn save(&mut self, target: &Path) -> Result<u64, EditError> {
         self.rebuild()?;
+        if self.pages_changed() {
+            // Deleted pages: the whole file is written anew so that what
+            // they showed is really gone. Otherwise the update is appended.
+            // A damaged file that cannot be written anew is appended to.
+            let whole = if self.drops_base_pages() {
+                self.write_whole(self.tail.clone().unwrap_or_default(), target).ok()
+            } else {
+                None
+            };
+            let len = match whole {
+                Some(len) => len,
+                None => self.append_to(target)?,
+            };
+            // Page keys, objects and history all refer to the old file:
+            // start again from the saved one.
+            *self = Session::open(target)?;
+            self.layout_changed = true;
+            return Ok(len);
+        }
+        let len = self.append_to(target)?;
+        self.base = open_base(target)?;
+        self.path = target.to_path_buf();
+        for (id, e) in &mut self.entries {
+            if e.alive {
+                let r = self.assigned.get(id).copied().or(e.base.map(|b| b.0));
+                e.base = r.map(|r| (r, e.cur));
+                e.template = None;
+            } else {
+                e.base = None;
+            }
+        }
+        self.assigned.clear();
+        self.tail = None;
+        self.saved_at = self.at();
+        Ok(len)
+    }
+
+    /// Writes base plus update to `target` through a temporary file.
+    fn append_to(&self, target: &Path) -> Result<u64, EditError> {
         let tmp = temp_path_for(target);
         let result = (|| -> Result<u64, EditError> {
             std::fs::copy(&self.path, &tmp)?;
@@ -437,21 +533,7 @@ impl Session {
         if result.is_err() {
             let _ = std::fs::remove_file(&tmp);
         }
-        let len = result?;
-        self.base = open_base(target)?;
-        self.path = target.to_path_buf();
-        for (id, e) in &mut self.entries {
-            if e.alive {
-                let r = self.assigned.get(id).copied().or(e.base.map(|b| b.0));
-                e.base = r.map(|r| (r, e.cur));
-            } else {
-                e.base = None;
-            }
-        }
-        self.assigned.clear();
-        self.tail = None;
-        self.saved_at = self.at();
-        Ok(len)
+        result
     }
 }
 
