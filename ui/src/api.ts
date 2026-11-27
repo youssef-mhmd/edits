@@ -238,6 +238,8 @@ export interface Changed {
   status: EditStatus;
   pages: number[];
   id: number | null;
+  /** The new page list after pages were added, removed, moved, turned or cropped. */
+  info: DocInfo | null;
 }
 
 export interface Saved {
@@ -254,6 +256,51 @@ export const userName = () => invoke<string>("user_name");
 export const recoveryOffer = (doc: number) => invoke<number | null>("recovery_offer", { doc });
 export const recoveryRestore = (doc: number) => invoke<Changed>("recovery_restore", { doc });
 export const recoveryDiscard = (doc: number) => invoke<void>("recovery_discard", { doc });
+
+// ------------------------------------------------------------------ pages
+
+export const pagesMove = (doc: number, pages: number[], before: number) =>
+  invoke<Changed>("pages_move", { doc, pages, before });
+export const pagesRotate = (doc: number, pages: number[], quarters: number) =>
+  invoke<Changed>("pages_rotate", { doc, pages, quarters });
+export const pagesDelete = (doc: number, pages: number[]) => invoke<Changed>("pages_delete", { doc, pages });
+export const pagesDuplicate = (doc: number, pages: number[]) =>
+  invoke<Changed>("pages_duplicate", { doc, pages });
+export const pagesInsertBlank = (doc: number, at: number, w: number, h: number, count: number) =>
+  invoke<Changed>("pages_insert_blank", { doc, at, w, h, count });
+export const pagesInsertImages = (doc: number, at: number, paths: string[]) =>
+  invoke<Changed>("pages_insert_images", { doc, at, paths });
+export const pagesInsertPdf = (doc: number, at: number, path: string, pages: number[] | null = null) =>
+  invoke<Changed>("pages_insert_pdf", { doc, at, path, pages });
+/** Margins as fractions of the shown page (left, top, right, bottom); null removes the crop. */
+export const pagesCrop = (doc: number, crops: { page: number; margins: number[] | null }[]) =>
+  invoke<Changed>("pages_crop", { doc, crops });
+/** Page numbers, headers, footers and a watermark; `{n}` and `{total}` are filled in per page. */
+export interface Decor {
+  header: [string, string, string];
+  footer: [string, string, string];
+  size: number;
+  color: number[];
+  /** From the page edge, in points. */
+  margin: number;
+  /** Added to a page's position (1 for the first page) to give {n}. */
+  offset: number;
+  arabic_digits: boolean;
+  watermark: string;
+  watermark_size: number;
+  watermark_color: number[];
+  watermark_opacity: number;
+}
+export const pagesDecorate = (doc: number, pages: number[], decor: Decor) =>
+  invoke<Changed>("pages_decorate", { doc, pages, decor });
+export const pagesUndecorate = (doc: number, pages: number[]) =>
+  invoke<Changed>("pages_undecorate", { doc, pages });
+export const pagesExport = (doc: number, pages: number[], path: string) =>
+  invoke<string>("pages_export", { doc, pages, path });
+export const pagesSplit = (doc: number, parts: { pages: number[]; name: string }[], folder: string) =>
+  invoke<string[]>("pages_split", { doc, parts, folder });
+export const mergeFiles = (paths: string[], target: string) =>
+  invoke<string>("merge_files", { paths, target });
 
 export type AnnotKind =
   | "highlight"

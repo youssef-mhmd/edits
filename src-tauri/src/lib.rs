@@ -7,6 +7,7 @@
 mod bench;
 mod edit;
 mod nav;
+mod pages;
 #[cfg(windows)]
 mod shm;
 mod state;
@@ -243,6 +244,19 @@ pub fn run() {
             edit::recovery_offer,
             edit::recovery_restore,
             edit::recovery_discard,
+            pages::pages_move,
+            pages::pages_rotate,
+            pages::pages_delete,
+            pages::pages_duplicate,
+            pages::pages_insert_blank,
+            pages::pages_insert_images,
+            pages::pages_insert_pdf,
+            pages::pages_crop,
+            pages::pages_decorate,
+            pages::pages_undecorate,
+            pages::pages_export,
+            pages::pages_split,
+            pages::merge_files,
         ])
         .setup(move |app| {
             *setup_ms_hook.lock().unwrap_or_else(|e| e.into_inner()) = unix_ms();

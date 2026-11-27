@@ -110,6 +110,9 @@ pub struct Changed {
     pub pages: Vec<u32>,
     /// The annotation a new one got, or the one changed.
     pub id: Option<AnnotId>,
+    /// The new page list, when pages were added, removed, moved, turned or
+    /// cropped: the document is shown anew.
+    pub info: Option<edits_core::DocInfo>,
 }
 
 /// An annotation for the front end, geometry in page fractions.
@@ -260,7 +263,7 @@ fn view(engine: &Engine, doc: DocId, id: AnnotId, a: &Annot) -> Result<View, Str
 
 /// Runs `f` on the document's session, off the interface thread, then shows
 /// the result: the engine reopens the document with the new update.
-async fn with_session<R: Send + 'static>(
+pub(crate) async fn with_session<R: Send + 'static>(
     app: tauri::AppHandle,
     doc: DocId,
     f: impl FnOnce(&Engine, &mut Session) -> Result<R, String> + Send + 'static,
@@ -282,10 +285,21 @@ fn show(engine: &Engine, doc: DocId, s: &Session) -> Result<(), String> {
     engine.set_overlay(doc, s.tail()).map_err(|e| e.to_string())
 }
 
-fn changed(engine: &Engine, doc: DocId, s: &Session, pages: Vec<u32>, id: Option<AnnotId>) -> Result<Changed, String> {
-    show(engine, doc, s)?;
+pub(crate) fn changed(
+    engine: &Engine,
+    doc: DocId,
+    s: &mut Session,
+    pages: Vec<u32>,
+    id: Option<AnnotId>,
+) -> Result<Changed, String> {
+    let info = if s.take_layout_changed() {
+        Some(engine.set_overlay_pages(doc, s.tail()).map_err(|e| e.to_string())?)
+    } else {
+        show(engine, doc, s)?;
+        None
+    };
     persist(s);
-    Ok(Changed { status: s.status(), pages, id })
+    Ok(Changed { status: s.status(), pages, id, info })
 }
 
 /// The annotations on `page` (comments, not links or form fields).
@@ -423,7 +437,7 @@ pub async fn annot_add(app: tauri::AppHandle, doc: DocId, annot: NewAnnot) -> Re
 #[tauri::command]
 pub async fn annot_move(app: tauri::AppHandle, doc: DocId, id: AnnotId, dx: f32, dy: f32) -> Result<Changed, String> {
     with_session(app, doc, move |engine, s| {
-        let mut a = s.get(id).ok_or("that annotation is gone")?.clone();
+        let mut a = s.get(id).ok_or("that annotation is gone")?;
         let u = user(engine, doc, a.page, vec![[0.0, 0.0], [dx, dy]])?;
         a.translate(u[1][0] - u[0][0], u[1][1] - u[0][1]);
         a.modified = edits_edit::pdf_date_now();
@@ -437,7 +451,7 @@ pub async fn annot_move(app: tauri::AppHandle, doc: DocId, id: AnnotId, dx: f32,
 #[tauri::command]
 pub async fn annot_resize(app: tauri::AppHandle, doc: DocId, id: AnnotId, rect: [f32; 4]) -> Result<Changed, String> {
     with_session(app, doc, move |engine, s| {
-        let mut a = s.get(id).ok_or("that annotation is gone")?.clone();
+        let mut a = s.get(id).ok_or("that annotation is gone")?;
         let to = user_rect(engine, doc, a.page, rect)?;
         if to[2] - to[0] < 1.0 || to[3] - to[1] < 1.0 {
             return Err("too small".into());
@@ -466,7 +480,7 @@ pub async fn annot_resize(app: tauri::AppHandle, doc: DocId, id: AnnotId, rect: 
 #[tauri::command]
 pub async fn annot_style(app: tauri::AppHandle, doc: DocId, id: AnnotId, style: Style) -> Result<Changed, String> {
     with_session(app, doc, move |engine, s| {
-        let mut a = s.get(id).ok_or("that annotation is gone")?.clone();
+        let mut a = s.get(id).ok_or("that annotation is gone")?;
         let looks = style.color.is_some() || style.fill.is_some() || style.width.is_some() || style.opacity.is_some();
         if looks {
             if !a.kind.drawable() {
@@ -556,6 +570,8 @@ pub async fn save_doc(app: tauri::AppHandle, doc: DocId, path: Option<String>) -
         let target = path.map(PathBuf::from).unwrap_or_else(|| s.path().to_path_buf());
         let before = s.path().to_path_buf();
         s.save(&target).map_err(|e| format!("could not save {}: {e}", target.display()))?;
+        // The saved file shows the pages as they were shown.
+        s.take_layout_changed();
         forget_recovery(&before);
         persist(s);
         engine.reload(doc, Some(target.clone())).map_err(|e| e.to_string())?;

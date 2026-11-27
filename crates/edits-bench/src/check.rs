@@ -264,3 +264,152 @@ pub fn pdf_all(dir: &Path) -> Res<bool> {
     let _ = std::fs::remove_file(&tmp);
     Ok(ok)
 }
+
+/// Page operations on every editable corpus file: last page to the front,
+/// first page turned, copied, page 3 deleted, a blank page added. Checked as
+/// shown (file plus update) and as saved (a copy of the file, written anew
+/// since a page was deleted): page count, sizes and text in the expected
+/// order, and every page renders. Also writes page 1 alone as a new file.
+pub fn pages_all(dir: &Path) -> Res<bool> {
+    use edits_core::{DocInfo, PageSize};
+    use edits_edit::Session;
+    let engine = Engine::start()?;
+    let tmp = std::env::temp_dir().join(format!("edits-pages-check-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp)?;
+    let mut ok = true;
+    let mut checked = 0;
+    // Expected pages: index into the original (None: blank) and turned or not.
+    type Expect = Vec<(Option<u32>, bool)>;
+    fn steps(s: &mut Session, n: u32) -> Result<Expect, String> {
+        let mut expect: Expect = (0..n).map(|i| (Some(i), false)).collect();
+        let e = |e: edits_edit::EditError| e.to_string();
+        if n > 1 {
+            s.move_pages(&[n - 1], 0).map_err(e)?;
+            let last = expect.pop().unwrap();
+            expect.insert(0, last);
+        }
+        s.rotate_pages(&[0], 1).map_err(e)?;
+        expect[0].1 = true;
+        s.duplicate_pages(&[0]).map_err(e)?;
+        expect.insert(1, expect[0]);
+        if expect.len() >= 4 {
+            s.delete_pages(&[3]).map_err(e)?;
+            expect.remove(3);
+        }
+        let at = expect.len() as u32;
+        s.insert_blank(at, 300.0, 200.0, 1).map_err(e)?;
+        expect.push((None, false));
+        Ok(expect)
+    }
+    for path in pdf_files(dir)? {
+        let name = path.strip_prefix(dir).unwrap_or(&path).display().to_string();
+        let Ok(info) = engine.open(&path, password_for(&path)) else { continue };
+        let n = info.page_count;
+        let session = Session::open(&path).ok().filter(|s| s.page_count().ok() == Some(n));
+        let Some(mut s) = session.filter(|_| n > 0) else {
+            engine.close(info.doc);
+            continue;
+        };
+        let fingerprint = |doc, i: u32| -> String {
+            engine
+                .page_text(doc, i, 0)
+                .map(|t| {
+                    let mut c: Vec<char> = t.text.chars().filter(|c| !c.is_whitespace()).collect();
+                    c.sort_unstable();
+                    c.into_iter().collect()
+                })
+                .unwrap_or_else(|_| "?".into())
+        };
+        let original: Vec<(PageSize, String)> =
+            (0..n).map(|i| (info.pages[i as usize], fingerprint(info.doc, i))).collect();
+        let verify = |expect: &Expect, got: &DocInfo| -> Result<(), String> {
+            if got.page_count as usize != expect.len() {
+                return Err(format!("{} pages, expected {}", got.page_count, expect.len()));
+            }
+            for (i, (src, turned)) in expect.iter().enumerate() {
+                let size = got.pages[i];
+                let (want, text) = match src {
+                    Some(k) => original[*k as usize].clone(),
+                    None => (PageSize { w: 300.0, h: 200.0 }, String::new()),
+                };
+                let want = if *turned { PageSize { w: want.h, h: want.w } } else { want };
+                if (size.w - want.w).abs() > 1.0 || (size.h - want.h).abs() > 1.0 {
+                    return Err(format!("page {i} is {}x{}, expected {}x{}", size.w, size.h, want.w, want.h));
+                }
+                // A turned page's text is read in another order (and Arabic
+                // letters are joined differently): its size is checked instead.
+                if !turned && fingerprint(got.doc, i as u32) != text {
+                    return Err(format!("page {i} has other text"));
+                }
+                let spec = RenderSpec {
+                    doc: got.doc,
+                    page: i as u32,
+                    page_w: 60,
+                    page_h: 60,
+                    x: 0,
+                    y: 0,
+                    w: 60,
+                    h: 60,
+                    rotation: 0,
+                };
+                engine.render(spec, 0).map_err(|e| format!("page {i} does not render: {e}"))?;
+            }
+            Ok(())
+        };
+        let t = Instant::now();
+        let expect = steps(&mut s, n);
+        let ops_ms = t.elapsed().as_secs_f64() * 1000.0;
+        let shown = expect.clone().and_then(|ex| {
+            let got = engine.set_overlay_pages(info.doc, s.tail()).map_err(|e| e.to_string())?;
+            verify(&ex, &got)
+        });
+        engine.close(info.doc);
+        // The same on a copy, saved.
+        let out = tmp.join("saved.pdf");
+        let t2 = Instant::now();
+        let saved = shown.clone().and_then(|()| {
+            std::fs::copy(&path, &out).map_err(|e| e.to_string())?;
+            let mut s2 = Session::open(&out).map_err(|e| e.to_string())?;
+            let ex = steps(&mut s2, n)?;
+            s2.save(&out).map_err(|e| e.to_string())?;
+            let ms = t2.elapsed().as_secs_f64() * 1000.0;
+            let got = engine.open(&out, None).map_err(|e| e.to_string())?;
+            let r = verify(&ex, &got);
+            engine.close(got.doc);
+            r.map(|()| ms)
+        });
+        let part = tmp.join("part.pdf");
+        let exported = shown.clone().and_then(|()| {
+            s.export(&[0], &part).map_err(|e| e.to_string())?;
+            let got = engine.open(&part, None).map_err(|e| e.to_string())?;
+            let pages = got.page_count;
+            engine.close(got.doc);
+            if pages == 1 { Ok(()) } else { Err(format!("export has {pages} pages")) }
+        });
+        checked += 1;
+        let before = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let after = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+        // Writing some pages of a damaged file anew is refused, not done badly.
+        let refused = matches!(&exported, Err(e) if e.contains("damaged"));
+        match (&shown, &saved, &exported) {
+            (Ok(()), Ok(_), Err(_)) if refused => println!("OK-DAMAGED  {name}: export refused (damaged file)"),
+            (Ok(()), Ok(save_ms), Ok(())) => println!(
+                "OK          {name}: {n} pages, {:.1} MB; steps {ops_ms:.0} ms, save {save_ms:.0} ms ({:.0}% of the size)",
+                before as f64 / 1e6,
+                after as f64 * 100.0 / before.max(1) as f64
+            ),
+            _ => {
+                ok = false;
+                let what = [("shown", shown.err()), ("saved", saved.err()), ("export", exported.err())]
+                    .into_iter()
+                    .filter_map(|(k, e)| e.map(|e| format!("{k}: {e}")))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                println!("FAIL        {name}: {what}");
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+    println!("{checked} files checked");
+    Ok(ok)
+}
