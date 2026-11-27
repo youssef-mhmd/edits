@@ -83,6 +83,9 @@ pub(crate) struct OpenDoc {
     /// Text of each page once read (the text index). Kept across reopens.
     /// Only the render thread fills it.
     pub texts: Vec<Option<std::sync::Arc<str>>>,
+    /// Holds edits not in the file yet: never reopen it to free memory.
+    pub dirty: bool,
+    pdfium: &'static Pdfium,
 }
 
 impl OpenDoc {
@@ -103,6 +106,26 @@ impl OpenDoc {
             self.loads += 1;
         }
         Ok(&self.pages.last().expect("just pushed").1)
+    }
+
+    /// The page, loaded if needed, for changing it.
+    pub fn page_mut(&mut self, index: u32) -> Result<&mut PdfPage<'static>, EngineError> {
+        self.page(index)?;
+        Ok(&mut self.pages.last_mut().expect("page() just cached it").1)
+    }
+
+    /// Opens the file again (after it was saved), dropping PDFium's copy
+    /// and any edits not saved. The text index is kept.
+    pub fn reload(&mut self) -> Result<(), EngineError> {
+        let doc = self.pdfium.load_pdf_from_file(&self.path, self.password.as_deref()).map_err(open_error)?;
+        self.pages.clear();
+        self.doc = doc;
+        self.page_count = self.doc.pages().len() as u32;
+        self.texts.resize(self.page_count as usize, None);
+        self.stamp = file_stamp(&self.path);
+        self.loads = 0;
+        self.dirty = false;
+        Ok(())
     }
 
     /// The page's characters, from the index or read now and stored.
@@ -154,6 +177,8 @@ impl Docs {
             stamp: file_stamp(path),
             loads: 0,
             texts: vec![None; page_count as usize],
+            dirty: false,
+            pdfium: self.pdfium,
         };
         self.docs.insert(id, od);
         Ok(self.docs.get_mut(&id).expect("just inserted"))
@@ -179,7 +204,7 @@ impl Docs {
         if now <= limit || now < self.baseline + MIN_GROWTH_TO_REOPEN {
             return;
         }
-        for od in self.docs.values_mut().filter(|d| d.loads > 0) {
+        for od in self.docs.values_mut().filter(|d| d.loads > 0 && !d.dirty) {
             if file_stamp(&od.path) != od.stamp {
                 continue; // changed on disk: keep what we have rather than show a different file
             }

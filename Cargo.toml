@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/edits-core", "crates/edits-bench", "src-tauri"]
+members = ["crates/edits-core", "crates/edits-edit", "crates/edits-bench", "src-tauri"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,6 +10,7 @@ rust-version = "1.88"
 
 [workspace.dependencies]
 edits-core = { path = "crates/edits-core" }
+edits-edit = { path = "crates/edits-edit" }
 pdfium-render = { version = "0.9.6", default-features = false, features = ["pdfium_8125", "thread_safe"] }
 lopdf = { version = "0.47", default-features = false }
 thiserror = "2"

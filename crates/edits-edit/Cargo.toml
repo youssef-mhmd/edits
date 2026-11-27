@@ -1,0 +1,15 @@
+[package]
+name = "edits-edit"
+description = "Annotations, undo and redo, and incremental save for edits"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+lopdf.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

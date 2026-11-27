@@ -20,6 +20,9 @@ pub type DocId = u32;
 /// Search matches on one page: its index and character ranges [start, end).
 pub type PageHits = (u32, Vec<[u32; 2]>);
 
+/// A created annotation and its index on its page, or why it failed.
+pub type Created = (edits_edit::AnnotId, Result<u32, EngineError>);
+
 /// Identifies a queued job, for cancelling or re-prioritising it.
 pub type Ticket = u64;
 
@@ -184,6 +187,8 @@ struct DocSource {
     path: PathBuf,
     password: Option<String>,
     stamp: Option<Stamp>,
+    /// Changes each time the document is reopened after a save.
+    generation: u64,
 }
 
 /// Render workers: how to start them and how many run.
@@ -220,6 +225,14 @@ struct State {
     sources: HashMap<DocId, DocSource>,
     running: HashMap<Ticket, Running>,
     pool: Pool,
+    last_generation: u64,
+}
+
+impl State {
+    fn next_generation(&mut self) -> u64 {
+        self.last_generation += 1;
+        self.last_generation
+    }
 }
 
 /// True if `job` should run in a worker rather than on the render thread.
@@ -299,7 +312,13 @@ fn take_heavy(shared: &Shared, worker: Option<&Worker>) -> Option<Taken> {
         Some((ticket, priority, Job::Render { spec, submitted, reply })) => {
             let source = st.sources.get(&spec.doc).cloned();
             let stale = worker
-                .map(|w| w.open.iter().copied().filter(|d| !st.sources.contains_key(d)).collect())
+                .map(|w| {
+                    w.open
+                        .iter()
+                        .filter(|(d, g)| st.sources.get(d).map(|s| s.generation) != Some(**g))
+                        .map(|(d, _)| *d)
+                        .collect()
+                })
                 .unwrap_or_default();
             st.running.insert(ticket, Running { spec, child: None, started: Instant::now(), stopped: None });
             let (cmd, pdfium_dir) = (st.pool.cmd.clone(), st.pool.pdfium_dir.clone());
@@ -358,8 +377,8 @@ fn drive_worker(shared: Arc<Shared>) {
         }
         let w = worker.as_mut().expect("spawned above");
         let mut alive = t.stale.iter().all(|d| w.close(*d).is_ok());
-        if alive && !w.open.contains(&t.spec.doc) {
-            match w.open(t.spec.doc, &source.path, source.password.as_deref(), source.stamp) {
+        if alive && !w.open.contains_key(&t.spec.doc) {
+            match w.open(t.spec.doc, source.generation, &source.path, source.password.as_deref(), source.stamp) {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
                     log::warn!("render worker cannot open {}: {e}", source.path.display());
@@ -613,6 +632,49 @@ impl Engine {
         rx.recv().map_err(|_| EngineError::Stopped)?
     }
 
+    /// Page fractions (top-left origin, /Rotate applied) to PDF user space.
+    pub fn to_user_space(&self, doc: DocId, page: u32, points: Vec<[f32; 2]>) -> Result<Vec<[f32; 2]>, EngineError> {
+        self.call(doc, CONTROL_PRIORITY - 1, move |od| crate::annots::to_user_space(od.page(page)?, &points))
+    }
+
+    /// Applies annotation changes to PDFium's copy of the document, so pages
+    /// render with them. Returns the index of each created annotation. Until
+    /// the document is saved and reloaded, its pages render on the render
+    /// thread only: workers have their own copy without the changes.
+    pub fn edit_layer(&self, doc: DocId, ops: Vec<edits_edit::LayerOp>) -> Result<Vec<Created>, EngineError> {
+        // Off the workers before the change is made.
+        self.shared.lock().sources.remove(&doc);
+        self.call(doc, CONTROL_PRIORITY - 1, move |od| Ok(crate::annots::apply(od, &ops)))
+    }
+
+    /// Opens the document's file again after it was replaced by a save,
+    /// or with `path`, the file it was saved as. Edits not saved are dropped
+    /// from PDFium's copy.
+    pub fn reload(&self, doc: DocId, path: Option<PathBuf>) -> Result<(), EngineError> {
+        let shared = self.shared.clone();
+        self.call(doc, CONTROL_PRIORITY, move |od| {
+            if let Some(p) = path {
+                od.path = p;
+            }
+            od.reload()?;
+            let mut st = shared.lock();
+            let generation = st.next_generation();
+            st.sources.insert(
+                doc,
+                DocSource { path: od.path.clone(), password: od.password.clone(), stamp: od.stamp, generation },
+            );
+            Ok(())
+        })
+    }
+
+    /// Writes the whole document, as PDFium holds it (unsaved annotations
+    /// included), to `path`. For files an incremental save cannot handle.
+    pub fn save_full(&self, doc: DocId, path: PathBuf) -> Result<(), EngineError> {
+        self.call(doc, CONTROL_PRIORITY - 1, move |od| {
+            od.doc.save_to_file(&path).map_err(|e| EngineError::Render(crate::docs::describe(&e)))
+        })
+    }
+
     /// The document's bookmarks. Empty if it has none.
     pub fn outline(&self, doc: DocId) -> Result<Vec<crate::nav::OutlineItem>, EngineError> {
         self.call(doc, CONTROL_PRIORITY - 1, |od| Ok(crate::nav::outline(&od.doc)))
@@ -854,7 +916,12 @@ impl RenderThread {
                 pages.last().copied().unwrap_or(PageSize { w: 595.0, h: 842.0 })
             }));
         }
-        let source = DocSource { path: path.to_path_buf(), password: password.map(str::to_string), stamp: od.stamp };
+        let source = DocSource {
+            path: path.to_path_buf(),
+            password: password.map(str::to_string),
+            stamp: od.stamp,
+            generation: 0,
+        };
         self.shared.lock().sources.insert(id, source);
         Ok(DocInfo { doc: id, page_count, pages, broken_pages, open_us: start.elapsed().as_micros() as u64 })
     }

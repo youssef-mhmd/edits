@@ -34,13 +34,13 @@ fn one_unit(u: u32) -> char {
 }
 
 /// PDF user space to page fractions (top-left origin, /Rotate applied).
-struct PageMap {
+pub(crate) struct PageMap {
     // fx = a*x + b*y + c, fy = d*x + e*y + f
     m: [f64; 6],
 }
 
 impl PageMap {
-    fn new(page: &PdfPage) -> Option<Self> {
+    pub(crate) fn new(page: &PdfPage) -> Option<Self> {
         const SIZE: f64 = 1_000_000.0;
         let config = PdfRenderConfig::new().set_fixed_size(SIZE as Pixels, SIZE as Pixels);
         // Probe far apart so whole-pixel results still give a precise mapping.
@@ -52,6 +52,17 @@ impl PageMap {
         Some(Self {
             m: [(ox.0 - o.0) / 1000.0, (oy.0 - o.0) / 1000.0, o.0, (ox.1 - o.1) / 1000.0, (oy.1 - o.1) / 1000.0, o.1],
         })
+    }
+
+    /// Page fractions back to PDF user space.
+    pub(crate) fn invert(&self, fx: f32, fy: f32) -> Option<(f32, f32)> {
+        let m = &self.m;
+        let det = m[0] * m[4] - m[1] * m[3];
+        if det.abs() < 1e-12 {
+            return None;
+        }
+        let (u, v) = (fx as f64 - m[2], fy as f64 - m[5]);
+        Some((((m[4] * u - m[1] * v) / det) as f32, ((m[0] * v - m[3] * u) / det) as f32))
     }
 
     fn apply(&self, x: f32, y: f32) -> (f32, f32) {

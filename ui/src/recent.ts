@@ -22,6 +22,10 @@ export interface Settings {
   language: LangSetting;
   checkUpdates: boolean;
   printDpi: number;
+  /** Name written on annotations; empty uses the Windows user name. */
+  author: string;
+  /** Markup colour, red, green, blue from 0 to 1. */
+  markupColor: number[];
 }
 
 interface Saved {
@@ -44,6 +48,8 @@ let saved: Saved = {
     language: "system",
     checkUpdates: true,
     printDpi: 150,
+    author: "",
+    markupColor: [1, 0.92, 0.23],
   },
 };
 let timer = 0;

@@ -1006,6 +1006,7 @@ name = "edits"
 version = "0.1.0"
 dependencies = [
  "edits-core",
+ "edits-edit",
  "log",
  "serde",
  "serde_json",
@@ -1026,6 +1027,7 @@ name = "edits-bench"
 version = "0.1.0"
 dependencies = [
  "edits-core",
+ "edits-edit",
  "lopdf",
  "serde",
  "serde_json",
@@ -1036,6 +1038,7 @@ dependencies = [
 name = "edits-core"
 version = "0.1.0"
 dependencies = [
+ "edits-edit",
  "log",
  "lopdf",
  "pdfium-render",
@@ -1045,6 +1048,15 @@ dependencies = [
  "thiserror 2.0.21",
  "unicode-bidi",
  "unicode-normalization",
+]
+
+[[package]]
+name = "edits-edit"
+version = "0.1.0"
+dependencies = [
+ "lopdf",
+ "serde",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

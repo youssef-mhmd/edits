@@ -222,3 +222,42 @@ export function search(
 }
 
 export const cancelSearch = (id: number) => invoke<void>("cancel_search", { id });
+
+// ---------------------------------------------------------------- editing
+
+export type MarkupKind = "highlight" | "underline" | "strikeout" | "squiggly";
+
+export interface EditStatus {
+  dirty: boolean;
+  can_undo: boolean;
+  can_redo: boolean;
+}
+
+/** A change's result: the new undo state and the pages to draw again. */
+export interface Changed {
+  status: EditStatus;
+  pages: number[];
+  id: number | null;
+}
+
+export interface Saved {
+  status: EditStatus;
+  path: string;
+  ms: number;
+  full: boolean;
+}
+
+export const annotMarkup = (
+  doc: number,
+  page: number,
+  kind: MarkupKind,
+  rects: number[][],
+  color: number[],
+  opacity: number,
+  author: string,
+) => invoke<Changed>("annot_markup", { doc, page, kind, rects, color, opacity, author });
+export const annotRemove = (doc: number, id: number) => invoke<Changed>("annot_remove", { doc, id });
+export const editUndo = (doc: number) => invoke<Changed>("edit_undo", { doc });
+export const editRedo = (doc: number) => invoke<Changed>("edit_redo", { doc });
+export const saveDoc = (doc: number, path: string | null = null) => invoke<Saved>("save_doc", { doc, path });
+export const userName = () => invoke<string>("user_name");

@@ -3,9 +3,16 @@
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { open as pickFile } from "@tauri-apps/plugin-dialog";
+  import { open as pickFile, save as pickSavePath } from "@tauri-apps/plugin-dialog";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import {
+    annotMarkup,
+    editRedo,
+    editUndo,
+    saveDoc,
+    userName,
+    type Changed,
+    type MarkupKind,
     closeDoc,
     needsPassword,
     openDoc,
@@ -43,7 +50,19 @@
     name: string;
     viewer: Viewer | null;
     outline: OutlineItem[] | null;
+    /** Unsaved changes, and whether undo and redo have anything to do. */
+    dirty: boolean;
+    canUndo: boolean;
+    canRedo: boolean;
   }
+
+  const MARKUP_COLORS: { rgb: number[]; css: string }[] = [
+    { rgb: [1, 0.92, 0.23], css: "#ffeb3b" },
+    { rgb: [0.55, 0.9, 0.4], css: "#8ce666" },
+    { rgb: [0.4, 0.75, 1], css: "#66bfff" },
+    { rgb: [1, 0.55, 0.78], css: "#ff8cc7" },
+    { rgb: [0.95, 0.3, 0.25], css: "#f24d40" },
+  ];
 
   // Tabs hold class instances; keep the array itself reactive, not deep.
   let tabs: Tab[] = $state.raw([]);
@@ -79,6 +98,13 @@
   let pwField: HTMLInputElement | null = $state(null);
   let transport: Transport = $state.raw(transports.protocol);
   let printOpen = $state(false);
+  let hasSel = $state(false);
+  let markupColor: number[] = $state(MARKUP_COLORS[0].rgb);
+  let author = $state("");
+  let defaultAuthor = $state("");
+  let busy = false; // one edit at a time, in order
+  // Set while asking whether to save a document before it closes.
+  let unsavedPrompt: { tab: Tab; resolve: (r: "save" | "discard" | "cancel") => void } | null = $state(null);
   let settingsOpen = $state(false);
   let theme: Theme = $state("system");
   let language: LangSetting = $state("system");
@@ -128,6 +154,7 @@
     t?.viewer?.setActive(true);
     if (t?.viewer) {
       (window as unknown as { __viewer: Viewer }).__viewer = t.viewer;
+      hasSel = t.viewer.hasSelection;
       refresh(t.id);
       t.viewer.scroller.focus();
     }
@@ -151,12 +178,27 @@
       // Deactivate the visible tab while it is still visible, so it records
       // where the reader was before it is hidden.
       for (const t of tabs) t.viewer?.setActive(false);
-      tabs = [...tabs, { id, path: realPath, name: nameOf(realPath), viewer: null, outline: null }];
+      tabs = [
+        ...tabs,
+        {
+          id,
+          path: realPath,
+          name: nameOf(realPath),
+          viewer: null,
+          outline: null,
+          dirty: false,
+          canUndo: false,
+          canRedo: false,
+        },
+      ];
       activeId = id;
       await tick();
       const v = new Viewer(hosts[id], info, transport);
       v.onUpdate = () => refresh(id);
       v.onExternalLink = (uri) => void openUrl(uri).catch((e) => (error = String(e)));
+      v.onSelection = (has) => {
+        if (id === activeId) hasSel = has;
+      };
       const saved = bench ? undefined : lastView(realPath);
       if (saved) v.restore(saved);
       patchTab(id, { viewer: v });
@@ -178,7 +220,30 @@
     }
   }
 
-  function closeTab(id: number) {
+  /** Asks whether to save `tab`'s changes. */
+  function askUnsaved(tab: Tab): Promise<"save" | "discard" | "cancel"> {
+    return new Promise((resolve) => (unsavedPrompt = { tab, resolve }));
+  }
+
+  function answerUnsaved(r: "save" | "discard" | "cancel") {
+    const p = unsavedPrompt;
+    unsavedPrompt = null;
+    p?.resolve(r);
+  }
+
+  /** Lets `tab` close: saves or discards its changes as the reader chooses. False to keep it open. */
+  async function releaseTab(tab: Tab): Promise<boolean> {
+    if (!tab.dirty) return true;
+    await activate(tab.id);
+    const r = await askUnsaved(tab);
+    if (r === "cancel") return false;
+    if (r === "save") return save(tab, false);
+    return true;
+  }
+
+  async function closeTab(id: number) {
+    const tab = tabs.find((t) => t.id === id);
+    if (!tab || !(await releaseTab(tab))) return;
     const i = tabs.findIndex((t) => t.id === id);
     if (i < 0) return;
     const t = tabs[i];
@@ -196,6 +261,84 @@
         activeId = 0;
         recent = recentFiles();
       }
+    }
+  }
+
+  /** Takes in a change: undo state on the tab, and pages drawn again. */
+  function changed(tabId: number, c: Changed) {
+    patchTab(tabId, { dirty: c.status.dirty, canUndo: c.status.can_undo, canRedo: c.status.can_redo });
+    tabs.find((t) => t.id === tabId)?.viewer?.invalidatePages(c.pages);
+  }
+
+  /** Runs edits one after another, so they reach the history in order. */
+  async function edit(fn: (tab: Tab, v: Viewer) => Promise<void>) {
+    const tab = active;
+    const v = tab?.viewer;
+    if (!tab || !v || busy) return;
+    busy = true;
+    try {
+      await fn(tab, v);
+    } catch (e) {
+      error = String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  function markup(kind: MarkupKind) {
+    void edit(async (tab, v) => {
+      const parts = await v.selectionRects();
+      for (const { page, rects } of parts) {
+        changed(
+          tab.id,
+          await annotMarkup(v.info.doc, page, kind, rects, markupColor, 1, author || defaultAuthor),
+        );
+      }
+      v.clearSelection();
+    });
+  }
+
+  function undo() {
+    void edit(async (tab, v) => changed(tab.id, await editUndo(v.info.doc)));
+  }
+
+  function redo() {
+    void edit(async (tab, v) => changed(tab.id, await editRedo(v.info.doc)));
+  }
+
+  /** Saves `tab`, to a new file with `as`. Returns true when saved. */
+  async function save(tab: Tab, as: boolean): Promise<boolean> {
+    const v = tab.viewer;
+    if (!v) return false;
+    let path: string | null = null;
+    if (as) {
+      path = await pickSavePath({ defaultPath: tab.path, filters: [{ name: "PDF", extensions: ["pdf"] }] });
+      if (!path) return false;
+      path = normalize(path);
+    }
+    try {
+      const r = await saveDoc(v.info.doc, path);
+      patchTab(tab.id, {
+        path: r.path,
+        name: nameOf(r.path),
+        dirty: r.status.dirty,
+        canUndo: r.status.can_undo,
+        canRedo: r.status.can_redo,
+      });
+      if (r.full) error = t("save.full");
+      // Pages are now drawn from the saved file.
+      v.invalidatePages(v.pagesInView(800));
+      return true;
+    } catch (e) {
+      error = t("save.failed", { error: String(e) });
+      return false;
+    }
+  }
+
+  function saveActive(as: boolean) {
+    if (active && !busy) {
+      busy = true;
+      void save(active, as).finally(() => (busy = false));
     }
   }
 
@@ -272,6 +415,9 @@
     const screen = (dir: number) => () => scrollBy(dir * v.scroller.clientHeight * 0.9);
     if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "c" && v.hasSelection)
       return () => void copySelection(v);
+    if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "z") return () => undo();
+    if (e.ctrlKey && (e.key.toLowerCase() === "y" || (e.shiftKey && e.key.toLowerCase() === "z")))
+      return () => redo();
     if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "a")
       return () => void v.selectPage(v.currentPage());
     if (e.key === "Escape" && v.hasSelection) return () => v.clearSelection();
@@ -333,6 +479,7 @@
     if (e.key === "F4") return () => toggleSidebar();
     if (viewer && e.ctrlKey && k === "f") return () => void openFind();
     if (viewer && e.ctrlKey && k === "p") return () => (printOpen = true);
+    if (viewer && e.ctrlKey && k === "s") return () => saveActive(e.shiftKey);
     if (e.ctrlKey && e.key === ",") return () => (settingsOpen = true);
     if (viewer && e.key === "F3") {
       return () => (findOpen && findBar ? findBar.step(e.shiftKey ? -1 : 1) : void openFind());
@@ -342,7 +489,7 @@
 
   function onKey(e: KeyboardEvent) {
     // Dialogs handle their own keys.
-    if (printOpen || settingsOpen || pwPrompt) return;
+    if (printOpen || settingsOpen || pwPrompt || unsavedPrompt) return;
     const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement;
     const action = appKeyAction(e) ?? (viewer && !typing ? keyAction(e, viewer) : null);
     if (action) {
@@ -398,6 +545,9 @@
 
     void (async () => {
       const s = await startup();
+      void userName()
+        .then((n) => (defaultAuthor = n))
+        .catch(() => {});
       bench = s.bench;
       transport = transports[s.transport];
       initialPath = s.file;
@@ -410,6 +560,8 @@
         theme = settings().theme;
         language = settings().language;
         checkUpdates = settings().checkUpdates;
+        author = settings().author;
+        if (Array.isArray(settings().markupColor)) markupColor = settings().markupColor;
         applyLook(theme, language);
         // Look for an update once start-up is well over; never in tests.
         if (checkUpdates && !navigator.webdriver) setTimeout(() => void checkForUpdate(), 5000);
@@ -434,8 +586,18 @@
     // Save where the reader is, then let the window close. This handler must
     // never stop the close: it cannot throw, and it waits at most half a
     // second (positions are also saved continuously while reading).
-    const unlistenClose = getCurrentWindow().onCloseRequested(async () => {
+    const unlistenClose = getCurrentWindow().onCloseRequested(async (event) => {
       if (bench) return;
+      // Unsaved changes: keep the window, ask, then close it ourselves.
+      if (tabs.some((t) => t.dirty)) {
+        event.preventDefault();
+        void (async () => {
+          for (const tab of tabs.filter((t) => t.dirty)) if (!(await releaseTab(tab))) return;
+          for (const tab of tabs) patchTab(tab.id, { dirty: false });
+          await getCurrentWindow().close();
+        })().catch((e) => (error = String(e)));
+        return;
+      }
       try {
         for (const t of tabs)
           if (t.viewer) remember(t.path, t.name, t.viewer.pageCount, t.viewer.viewState());
@@ -469,6 +631,7 @@
           onkeydown={(e) => e.key === "Enter" && activate(tab.id)}
           onauxclick={(e) => e.button === 1 && closeTab(tab.id)}
         >
+          {#if tab.dirty}<span class="dirty" title={t("unsaved.marker")}>●</span>{/if}
           <span class="tab-name" dir="auto">{tab.name}</span>
           <button
             class="tab-close"
@@ -601,6 +764,80 @@
       </button>
       <span class="sep"></span>
       <button onclick={() => (printOpen = true)} title={t("bar.printTitle")}>{t("bar.print")}</button>
+      <button onclick={() => saveActive(false)} disabled={!active?.dirty} title={t("save.saveTitle")}>
+        {t("save.save")}
+      </button>
+      <span class="sep"></span>
+      <button
+        disabled={!active?.canUndo}
+        onclick={undo}
+        title={t("edit.undoTitle")}
+        aria-label={t("edit.undo")}
+      >
+        ↶
+      </button>
+      <button
+        disabled={!active?.canRedo}
+        onclick={redo}
+        title={t("edit.redoTitle")}
+        aria-label={t("edit.redo")}
+      >
+        ↷
+      </button>
+      <span class="sep"></span>
+      <span class="marks" role="group" aria-label={t("mark.color")}>
+        {#each MARKUP_COLORS as c (c.css)}
+          <button
+            class="swatch"
+            class:active={markupColor.join() === c.rgb.join()}
+            style:background={c.css}
+            aria-label={c.css}
+            aria-pressed={markupColor.join() === c.rgb.join()}
+            title={t("mark.color")}
+            onclick={() => {
+              markupColor = c.rgb;
+              updateSettings({ markupColor: c.rgb });
+            }}
+          ></button>
+        {/each}
+      </span>
+      <button
+        disabled={!hasSel}
+        onclick={() => markup("highlight")}
+        title={hasSel ? t("mark.highlight") : t("mark.hint")}
+        aria-label={t("mark.highlight")}
+      >
+        <span
+          class="mk hl"
+          style:background={`rgb(${markupColor.map((c) => Math.round(c * 255)).join(" ")})`}
+        >
+          A
+        </span>
+      </button>
+      <button
+        disabled={!hasSel}
+        onclick={() => markup("underline")}
+        title={hasSel ? t("mark.underline") : t("mark.hint")}
+        aria-label={t("mark.underline")}
+      >
+        <span class="mk ul">A</span>
+      </button>
+      <button
+        disabled={!hasSel}
+        onclick={() => markup("strikeout")}
+        title={hasSel ? t("mark.strikeout") : t("mark.hint")}
+        aria-label={t("mark.strikeout")}
+      >
+        <span class="mk so">A</span>
+      </button>
+      <button
+        disabled={!hasSel}
+        onclick={() => markup("squiggly")}
+        title={hasSel ? t("mark.squiggly") : t("mark.hint")}
+        aria-label={t("mark.squiggly")}
+      >
+        <span class="mk sq">A</span>
+      </button>
     {:else}
       <button onclick={openDialog} title={t("app.openTitle")}>{t("app.open")}</button>
       <span class="name">edits</span>
@@ -716,6 +953,24 @@
           </div>
         </div>
       {/if}
+      {#if unsavedPrompt}
+        <div class="overlay">
+          <div class="password" role="alertdialog" aria-modal="true" aria-labelledby="unsaved-title">
+            <p id="unsaved-title" dir="auto">
+              <strong>{t("unsaved.title", { name: unsavedPrompt.tab.name })}</strong>
+            </p>
+            <p>{t("unsaved.body")}</p>
+            <div class="actions">
+              <!-- svelte-ignore a11y_autofocus -->
+              <button class="primary" autofocus onclick={() => answerUnsaved("save")}>
+                {t("unsaved.save")}
+              </button>
+              <button onclick={() => answerUnsaved("discard")}>{t("unsaved.discard")}</button>
+              <button onclick={() => answerUnsaved("cancel")}>{t("common.cancel")}</button>
+            </div>
+          </div>
+        </div>
+      {/if}
       {#if printOpen && viewer}
         <PrintDialog
           {viewer}
@@ -733,6 +988,12 @@
           {theme}
           {language}
           {checkUpdates}
+          {author}
+          {defaultAuthor}
+          onauthor={(a) => {
+            author = a;
+            updateSettings({ author: a });
+          }}
           onchange={changeSettings}
           oncheck={checkForUpdate}
           onclose={() => {
@@ -826,6 +1087,47 @@
   }
   .grow {
     flex: 1;
+  }
+  .dirty {
+    color: var(--accent);
+    font-size: 10px;
+  }
+  .marks {
+    display: flex;
+    gap: 3px;
+  }
+  .swatch {
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+  }
+  .swatch.active {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  .mk {
+    display: inline-block;
+    min-width: 14px;
+    padding: 0 2px;
+    line-height: 16px;
+    font-weight: 600;
+  }
+  .mk.hl {
+    color: #000;
+    border-radius: 2px;
+  }
+  .mk.ul {
+    text-decoration: underline;
+    text-decoration-thickness: 2px;
+  }
+  .mk.so {
+    text-decoration: line-through;
+    text-decoration-thickness: 2px;
+  }
+  .mk.sq {
+    text-decoration: underline wavy;
   }
   .update {
     display: flex;

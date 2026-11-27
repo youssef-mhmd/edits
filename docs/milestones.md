@@ -103,10 +103,10 @@ Notes: M1 ships with the open M1.4 items above (memory over target, heavy pages,
 
 ## M2: Annotate and mark up (release 0.2)
 
-- [ ] Command history with undo and redo (used by every later milestone)
-- [ ] Save, Save As, incremental save, safe write through a temporary file
+- [x] Command history with undo and redo (used by every later milestone) *(`edits-edit`; Ctrl Z, Ctrl Y)*
+- [x] Save, Save As, incremental save, safe write through a temporary file *(Ctrl S, Ctrl Shift S; changes are appended to the original bytes; encrypted files are rewritten whole by PDFium; asks before closing a tab or the window with unsaved changes)*
 - [ ] Autosave recovery file
-- [ ] Highlight, underline, strikethrough, squiggly
+- [x] Highlight, underline, strikethrough, squiggly *(from the text selection, five colours, with appearance streams)*
 - [ ] Freehand, line, arrow, rectangle, ellipse
 - [ ] Sticky notes and text boxes, with Arabic shaping (`edits-text`: rustybuzz, bidi, font embedding and subsetting)
 - [ ] Stamps and images
@@ -114,6 +114,10 @@ Notes: M1 ships with the open M1.4 items above (memory over target, heavy pages,
 - [ ] Annotations made in other apps display and can be edited
 
 Done when: annotations saved by edits show correctly in Chrome, Edge and Acrobat Reader, and saving takes ≤ 200 ms.
+
+Notes so far:
+- Save (`edits-bench save FILE`): 14 ms (0.1 MB), 31 ms (1.4 MB, 2,000 pages), 38 ms (10 MB); 205 ms for a 107 MB book and 795 ms for 506 MB, because the whole file is read, parsed by lopdf and copied. A reader that loads only the cross-reference data and the changed pages would fix that. PDFium's own full rewrite takes 252 ms for 10 MB and 12 s for 506 MB.
+- Not yet checked in Chrome, Edge and Acrobat Reader.
 
 ## M3: Organize pages (release 0.3)
 

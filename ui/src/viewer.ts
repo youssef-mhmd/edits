@@ -62,6 +62,18 @@ class CanvasCache {
   private bytes = 0;
   constructor(private budget: number) {}
 
+  /** Drops `key`; frees its canvas unless it is `keep`. */
+  delete(key: string, keep: HTMLCanvasElement | null = null) {
+    const c = this.map.get(key);
+    if (!c) return;
+    this.map.delete(key);
+    this.bytes -= c.width * c.height * 4;
+    if (c !== keep) {
+      c.remove();
+      c.width = c.height = 0;
+    }
+  }
+
   get(key: string): HTMLCanvasElement | undefined {
     const c = this.map.get(key);
     if (c) {
@@ -109,6 +121,12 @@ class BlobStore {
     return this.map.size;
   }
 
+  delete(page: number) {
+    const b = this.map.get(page);
+    if (b) this.bytes -= b.size;
+    this.map.delete(page);
+  }
+
   get(page: number): Blob | undefined {
     const b = this.map.get(page);
     if (b) {
@@ -135,6 +153,8 @@ class BlobStore {
 interface PageView {
   el: HTMLDivElement;
   preview: HTMLCanvasElement | null;
+  /** The preview from before the page changed, shown until the new one arrives. */
+  oldPreview: HTMLCanvasElement | null;
   tiles: Map<string, HTMLCanvasElement>; // key -> canvas attached to el
   error: HTMLDivElement | null;
   links: HTMLElement[];
@@ -219,6 +239,8 @@ export class Viewer {
   private errors = new Map<number, string>();
   /** Pages whose tiles are slow to render; they get larger tiles. */
   private slowPages = new Set<number>();
+  /** Bumped when a page's content changes (annotations); older renders are stale. */
+  private pageVer = new Map<number, number>();
   private frame = 0;
   private lastKeep = "";
   private _zoom = 1;
@@ -252,6 +274,8 @@ export class Viewer {
   onUpdate: () => void = () => {};
   /** Called when a tile arrives. */
   onTile: (t: TileData) => void = () => {};
+  /** Called when text is selected or the selection is cleared. */
+  onSelection: (has: boolean) => void = () => {};
 
   constructor(
     host: HTMLElement,
@@ -413,7 +437,7 @@ export class Viewer {
       const list = this.blobWaiters.get(i) ?? [];
       list.push(resolve);
       this.blobWaiters.set(i, list);
-      const key = `p${i}`;
+      const key = this.pk(i);
       if (!this.inflight.has(key) && !this.errors.has(i)) {
         this.request(key, this.previewSpec(i), PRIO_PREVIEW_NEAR, (c) => {
           const show = this.views.has(i) && !this.views.get(i)!.preview;
@@ -760,7 +784,52 @@ export class Viewer {
     return specs;
   }
 
-  private key = (s: RenderSpec) => `${s.page}/${s.page_w}/${s.rotation}/${s.x}/${s.y}/${s.w}`;
+  private key = (s: RenderSpec) =>
+    `${s.page}/${s.page_w}/${s.rotation}/${s.x}/${s.y}/${s.w}/${this.ver(s.page)}`;
+
+  private ver(i: number): number {
+    return this.pageVer.get(i) ?? 0;
+  }
+
+  /** In-flight key for page `i`'s preview at its current version. */
+  private pk(i: number): string {
+    return `p${i}@${this.ver(i)}`;
+  }
+
+  /**
+   * Draws pages again after their content changed (annotations added,
+   * removed, undone). What is on screen stays until the new renders arrive.
+   */
+  invalidatePages(pages: number[]) {
+    for (const i of pages) {
+      this.pageVer.set(i, this.ver(i) + 1);
+      this.previewBlobs.delete(i);
+      this.errors.delete(i);
+      const v = this.views.get(i);
+      if (v?.preview) {
+        v.oldPreview?.remove();
+        v.oldPreview = v.preview;
+        v.preview = null;
+      }
+      this.previewCanvases.delete(`p${i}`, v?.oldPreview ?? null);
+    }
+    this.lastKeep = "";
+    this.schedule();
+  }
+
+  /** The selected text's areas, page by page, in page fractions (left, top, right, bottom). */
+  async selectionRects(): Promise<{ page: number; rects: number[][] }[]> {
+    const o = this.ordered();
+    if (!o || !this.hasSelection) return [];
+    const [a, b] = o;
+    const out: { page: number; rects: number[][] }[] = [];
+    for (let p = a.page; p <= b.page; p++) {
+      const t = await this.loadText(p);
+      const rects = rangeRects(t, p === a.page ? a.i : 0, p === b.page ? b.i : t.text.length);
+      if (rects.length) out.push({ page: p, rects });
+    }
+    return out;
+  }
 
   /** Previews are rendered unrotated; the canvas is turned to fit the page. */
   private previewSpec(i: number): RenderSpec {
@@ -819,7 +888,15 @@ export class Viewer {
         const marks = document.createElement("div");
         marks.className = "marks";
         el.append(marks);
-        const v: PageView = { el, preview: null, tiles: new Map(), error: null, links: [], marks };
+        const v: PageView = {
+          el,
+          preview: null,
+          oldPreview: null,
+          tiles: new Map(),
+          error: null,
+          links: [],
+          marks,
+        };
         this.views.set(i, v);
         this.place(i, v);
         this.content.append(el);
@@ -885,8 +962,8 @@ export class Viewer {
 
   /** Shows page `i`'s preview from memory, from its compressed copy, or renders it. */
   private loadPreview(i: number, prio: number) {
-    const key = `p${i}`;
-    const cached = this.previewCanvases.get(key);
+    const key = this.pk(i);
+    const cached = this.previewCanvases.get(`p${i}`);
     if (cached) {
       this.attachPreviewTo(i, cached);
       return;
@@ -954,7 +1031,7 @@ export class Viewer {
     for (let d = 0; d < n && this.backgroundInflight < BACKGROUND_INFLIGHT; d++) {
       for (const i of d === 0 ? [center] : [center + d, center - d]) {
         if (i < 0 || i >= n || this.backgroundInflight >= BACKGROUND_INFLIGHT) continue;
-        const key = `p${i}`;
+        const key = this.pk(i);
         if (this.previewBlobs.has(i) || this.inflight.has(key) || this.errors.has(i)) continue;
         this.backgroundInflight++;
         this.request(
@@ -976,6 +1053,8 @@ export class Viewer {
     const v = this.views.get(i);
     const b = this.boxes.get(i);
     if (!v || !b || v.preview) return;
+    v.oldPreview?.remove();
+    v.oldPreview = null;
     c.className = "preview";
     v.preview = c;
     this.orientPreview(c, b);
@@ -1118,6 +1197,7 @@ export class Viewer {
       for (let p = Math.min(s.a.page, s.b.page); p <= Math.max(s.a.page, s.b.page); p++) pages.add(p);
     }
     for (const p of pages) if (this.views.has(p)) this.drawMarks(p);
+    this.onSelection(this.hasSelection);
   }
 
   clearSelection() {
@@ -1126,6 +1206,7 @@ export class Viewer {
     if (old)
       for (let p = Math.min(old.a.page, old.b.page); p <= Math.max(old.a.page, old.b.page); p++)
         this.drawMarks(p);
+    this.onSelection(false);
   }
 
   /** Selects all text on page `i`. */
@@ -1298,9 +1379,15 @@ export class Viewer {
       return;
     }
     this.inflight.add(key);
+    const ver = this.ver(spec.page);
     this.transport(spec, prio)
       .then((t) => {
         this.onTile(t);
+        if (this.ver(spec.page) !== ver) {
+          // The page changed while this was rendering.
+          t.release?.();
+          return;
+        }
         if (spec.w === TILE && spec.page_w !== PREVIEW_W && t.renderUs > SLOW_TILE_US) {
           this.slowPages.add(spec.page);
         }
@@ -1351,6 +1438,7 @@ export class Viewer {
     c.dataset.rot = String(s.rotation);
     c.dataset.side = String(s.w);
     c.dataset.page = String(s.page);
+    c.dataset.ver = String(this.ver(s.page));
     v.tiles.set(key, c);
     v.el.append(c);
     this.dropStaleTiles(s.page);
@@ -1380,7 +1468,8 @@ export class Viewer {
     return (
       Number(c.dataset.pw) !== pw ||
       c.dataset.rot !== String(this._rotation) ||
-      c.dataset.side !== String(this.tileSide(page))
+      c.dataset.side !== String(this.tileSide(page)) ||
+      c.dataset.ver !== String(this.ver(page))
     );
   }
 
