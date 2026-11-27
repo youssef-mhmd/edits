@@ -1910,7 +1910,8 @@
     min-width: 80px;
     padding: 0 6px 0 12px;
     border-radius: 8px;
-    color: var(--muted);
+    border: 1px solid transparent;
+    color: var(--tab-text);
     cursor: default;
     user-select: none;
     transition: background-color 0.12s;
@@ -1920,8 +1921,10 @@
   }
   .tab.active {
     background: var(--tab-active);
+    border-color: var(--tab-border);
     color: var(--text);
-    box-shadow: 0 1px 2px var(--tab-shadow);
+    font-weight: 600;
+    box-shadow: 0 1px 3px var(--tab-shadow);
   }
   .tab:focus-visible {
     outline: 2px solid var(--accent);
