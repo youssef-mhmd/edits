@@ -1054,7 +1054,7 @@ dependencies = [
 name = "edits-edit"
 version = "0.1.0"
 dependencies = [
- "lopdf",
+ "flate2",
  "serde",
  "thiserror 2.0.21",
 ]

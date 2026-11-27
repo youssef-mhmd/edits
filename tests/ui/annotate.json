@@ -1,6 +1,6 @@
 [
   {
-    "eval": "window.__pt = async (page, i, side) => { const v = __viewer; const t = await v.loadText(page); const b = t.boxes; const box = v.boxes.get(page); const r = v.scroller.getBoundingClientRect(); const w = box.pw / v.dpr, h = box.ph / v.dpr; const x = side === 'l' ? b[4*i] + 0.001 : b[4*i+2] - 0.001; const y = (b[4*i+1] + b[4*i+3]) / 2; return [r.left + box.x + x * w - v.scroller.scrollLeft, r.top + box.y + y * h - v.scroller.scrollTop]; }; window.__btn = (label) => [...document.querySelectorAll('header button')].find(b => b.getAttribute('aria-label') === label); window.__yellow = () => { const c = document.querySelector('.page canvas.tile'); return !!c; }",
+    "eval": "window.__pt = async (page, i, side) => { const v = __viewer; const t = await v.loadText(page); const b = t.boxes; const box = v.boxes.get(page); const r = v.scroller.getBoundingClientRect(); const w = box.pw / v.dpr, h = box.ph / v.dpr; const x = side === 'l' ? b[4*i] + 0.001 : b[4*i+2] - 0.001; const y = (b[4*i+1] + b[4*i+3]) / 2; return [r.left + box.x + x * w - v.scroller.scrollLeft, r.top + box.y + y * h - v.scroller.scrollTop]; }; window.__btn = (label) => [...document.querySelectorAll('header button, .ctxbar button')].find(b => b.getAttribute('aria-label') === label); window.__yellow = () => { const c = document.querySelector('.page canvas.tile'); return !!c; }",
     "wait": 300,
     "log": "[__btn('Highlight').disabled, __btn('Undo').disabled]"
   },

@@ -12,6 +12,7 @@
 //! edits-bench save FILE                        incremental save timing, on a copy (PRD 7)
 //! edits-bench text-check [DIR]                  page text against tests/text (reading order regressions)
 //! edits-bench check [DIR]                          open and render every corpus file, one process each
+//! edits-bench pdf-check [DIR]                    edits' own PDF reader and update writer on every file
 //! edits-bench lopdf-check [DIR]                    load, decrypt, clean and re-save every file with lopdf
 //! ```
 
@@ -94,6 +95,7 @@ fn main() -> ExitCode {
         },
         "text-check" => core_bench::text_check(Path::new("tests/text"), &dir_arg(&args)),
         "check" => check::run_all(&dir_arg(&args)),
+        "pdf-check" => check::pdf_all(&dir_arg(&args)),
         "lopdf-check" => check::lopdf_all(&dir_arg(&args)),
         // Internal: run by `check` in a child process so a crash is contained.
         "render-file" => match args.first() {

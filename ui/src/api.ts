@@ -244,20 +244,65 @@ export interface Saved {
   status: EditStatus;
   path: string;
   ms: number;
-  full: boolean;
 }
 
-export const annotMarkup = (
-  doc: number,
-  page: number,
-  kind: MarkupKind,
-  rects: number[][],
-  color: number[],
-  opacity: number,
-  author: string,
-) => invoke<Changed>("annot_markup", { doc, page, kind, rects, color, opacity, author });
 export const annotRemove = (doc: number, id: number) => invoke<Changed>("annot_remove", { doc, id });
 export const editUndo = (doc: number) => invoke<Changed>("edit_undo", { doc });
 export const editRedo = (doc: number) => invoke<Changed>("edit_redo", { doc });
 export const saveDoc = (doc: number, path: string | null = null) => invoke<Saved>("save_doc", { doc, path });
 export const userName = () => invoke<string>("user_name");
+
+export type AnnotKind =
+  "highlight" | "underline" | "strikeout" | "squiggly" | "ink" | "line" | "square" | "circle" | "other";
+
+/** An annotation, geometry in page fractions (top-left origin, /Rotate applied). */
+export interface AnnotView {
+  id: number;
+  page: number;
+  kind: AnnotKind;
+  subtype: string;
+  /** Left, top, right, bottom. */
+  rect: number[];
+  line: number[] | null;
+  color: number[];
+  fill: number[] | null;
+  opacity: number;
+  width: number;
+  arrow: boolean;
+  contents: string;
+  author: string;
+  modified: string;
+}
+
+export interface NewAnnot {
+  page: number;
+  kind: AnnotKind;
+  rects?: number[][];
+  ink?: number[][][];
+  line?: number[];
+  rect?: number[];
+  color: number[];
+  fill?: number[] | null;
+  opacity?: number;
+  width?: number;
+  arrow?: boolean;
+  author?: string;
+}
+
+export interface AnnotStyle {
+  color?: number[];
+  fill?: number[] | null;
+  width?: number;
+  opacity?: number;
+  contents?: string;
+}
+
+export const annotsAll = (doc: number) => invoke<AnnotView[]>("annots_all", { doc });
+export const annotsPage = (doc: number, page: number) => invoke<AnnotView[]>("annots_page", { doc, page });
+export const annotAdd = (doc: number, annot: NewAnnot) => invoke<Changed>("annot_add", { doc, annot });
+export const annotMove = (doc: number, id: number, dx: number, dy: number) =>
+  invoke<Changed>("annot_move", { doc, id, dx, dy });
+export const annotResize = (doc: number, id: number, rect: number[]) =>
+  invoke<Changed>("annot_resize", { doc, id, rect });
+export const annotStyle = (doc: number, id: number, style: AnnotStyle) =>
+  invoke<Changed>("annot_style", { doc, id, style });

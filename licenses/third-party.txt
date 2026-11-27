@@ -4,7 +4,7 @@ PDFium (https://pdfium.googlesource.com/pdfium/): BSD-3-Clause and Apache-2.0.
 Binary build by pdfium-binaries (https://github.com/bblanchon/pdfium-binaries): MIT.
 Their licence texts are in the licenses/pdfium folder next to edits.exe.
 
-Rust crates (316):
+Rust crates (317):
   adler2 2.0.1  0BSD OR MIT OR Apache-2.0
   aho-corasick 1.1.5  Unlicense OR MIT
   alloc-no-stdlib 2.0.4  BSD-3-Clause
@@ -58,6 +58,7 @@ Rust crates (316):
   dtor-proc-macro 0.0.6  Apache-2.0 OR MIT
   dunce 1.0.5  CC0-1.0 OR MIT-0 OR Apache-2.0
   dyn-clone 1.0.20  MIT OR Apache-2.0
+  edits-edit 0.1.0  Apache-2.0
   either 1.19.0  MIT OR Apache-2.0
   equivalent 1.0.3  Apache-2.0 OR MIT
   erased-serde 0.4.11  MIT OR Apache-2.0

@@ -83,8 +83,8 @@ pub(crate) struct OpenDoc {
     /// Text of each page once read (the text index). Kept across reopens.
     /// Only the render thread fills it.
     pub texts: Vec<Option<std::sync::Arc<str>>>,
-    /// Holds edits not in the file yet: never reopen it to free memory.
-    pub dirty: bool,
+    /// Unsaved edits: an incremental update shown on top of the file.
+    pub tail: Option<std::sync::Arc<Vec<u8>>>,
     pdfium: &'static Pdfium,
 }
 
@@ -108,23 +108,17 @@ impl OpenDoc {
         Ok(&self.pages.last().expect("just pushed").1)
     }
 
-    /// The page, loaded if needed, for changing it.
-    pub fn page_mut(&mut self, index: u32) -> Result<&mut PdfPage<'static>, EngineError> {
-        self.page(index)?;
-        Ok(&mut self.pages.last_mut().expect("page() just cached it").1)
-    }
-
-    /// Opens the file again (after it was saved), dropping PDFium's copy
-    /// and any edits not saved. The text index is kept.
+    /// Opens the file again, with the update in `tail` on top if there is
+    /// one. Used after edits change and after the file is saved. The text
+    /// index is kept: annotations do not change page text.
     pub fn reload(&mut self) -> Result<(), EngineError> {
-        let doc = self.pdfium.load_pdf_from_file(&self.path, self.password.as_deref()).map_err(open_error)?;
+        let doc = load(self.pdfium, &self.path, self.password.as_deref(), self.tail.clone())?;
         self.pages.clear();
         self.doc = doc;
         self.page_count = self.doc.pages().len() as u32;
         self.texts.resize(self.page_count as usize, None);
         self.stamp = file_stamp(&self.path);
         self.loads = 0;
-        self.dirty = false;
         Ok(())
     }
 
@@ -147,6 +141,24 @@ pub(crate) fn process_memory() -> u64 {
     sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), true, ProcessRefreshKind::nothing().with_memory());
     // Windows: private bytes. Elsewhere sysinfo's virtual size is not useful; use resident.
     sys.process(pid).map(|p| if cfg!(windows) { p.virtual_memory() } else { p.memory() }).unwrap_or(0)
+}
+
+/// Opens `path`, with `tail` appended in memory if given (the document as
+/// it will be once saved).
+fn load(
+    pdfium: &'static Pdfium,
+    path: &Path,
+    password: Option<&str>,
+    tail: Option<std::sync::Arc<Vec<u8>>>,
+) -> Result<PdfDocument<'static>, EngineError> {
+    match tail {
+        None => pdfium.load_pdf_from_file(path, password).map_err(open_error),
+        Some(t) => {
+            let base = edits_edit::pdf::FileSource::open(path).map_err(|e| EngineError::Open(e.to_string()))?;
+            let layered = edits_edit::pdf::Layered::new(std::sync::Arc::new(base), t);
+            pdfium.load_pdf_from_reader(layered.reader(), password).map_err(open_error)
+        }
+    }
 }
 
 /// The documents open in this process.
@@ -177,7 +189,7 @@ impl Docs {
             stamp: file_stamp(path),
             loads: 0,
             texts: vec![None; page_count as usize],
-            dirty: false,
+            tail: None,
             pdfium: self.pdfium,
         };
         self.docs.insert(id, od);
@@ -204,17 +216,17 @@ impl Docs {
         if now <= limit || now < self.baseline + MIN_GROWTH_TO_REOPEN {
             return;
         }
-        for od in self.docs.values_mut().filter(|d| d.loads > 0 && !d.dirty) {
+        for od in self.docs.values_mut().filter(|d| d.loads > 0) {
             if file_stamp(&od.path) != od.stamp {
                 continue; // changed on disk: keep what we have rather than show a different file
             }
             od.pages.clear();
-            match self.pdfium.load_pdf_from_file(&od.path, od.password.as_deref()) {
+            match load(self.pdfium, &od.path, od.password.as_deref(), od.tail.clone()) {
                 Ok(doc) => {
                     od.doc = doc;
                     od.loads = 0;
                 }
-                Err(e) => log::warn!("reopen of {} failed: {}", od.path.display(), describe(&e)),
+                Err(e) => log::warn!("reopen of {} failed: {e}", od.path.display()),
             }
         }
         self.loads_since_check = self.docs.values().map(|d| d.loads).sum();

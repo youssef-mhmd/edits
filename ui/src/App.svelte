@@ -6,12 +6,19 @@
   import { open as pickFile, save as pickSavePath } from "@tauri-apps/plugin-dialog";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import {
-    annotMarkup,
+    annotAdd,
+    annotMove,
+    annotRemove,
+    annotResize,
+    annotsAll,
+    annotStyle,
     editRedo,
     editUndo,
     saveDoc,
     userName,
     type Changed,
+    type AnnotStyle,
+    type AnnotView,
     type MarkupKind,
     closeDoc,
     needsPassword,
@@ -23,7 +30,7 @@
     type SearchOptions,
     type Transport,
   } from "./api";
-  import { Viewer, type FitMode, type ViewMode } from "./viewer";
+  import { Viewer, type FitMode, type Tool, type ViewMode } from "./viewer";
   import { benchNoFile, benchWithFile } from "./bench";
   import Sidebar from "./Sidebar.svelte";
   import SearchBar from "./SearchBar.svelte";
@@ -86,7 +93,7 @@
   let error = $state("");
   let recent: RecentEntry[] = $state.raw([]);
   let sidebarOpen = $state(false);
-  let sidebarPanel: "pages" | "bookmarks" = $state("pages");
+  let sidebarPanel: "pages" | "bookmarks" | "comments" = $state("pages");
   let findOpen = $state(false);
   let findBar: SearchBar | null = $state(null);
   let searchOptions: SearchOptions = $state(settings().searchOptions);
@@ -102,7 +109,16 @@
   let markupColor: number[] = $state(MARKUP_COLORS[0].rgb);
   let author = $state("");
   let defaultAuthor = $state("");
-  let busy = false; // one edit at a time, in order
+  let busy = false; // a save is running
+  let editQueue: Promise<void> = Promise.resolve(); // edits run one after another, in order
+  let tool: Tool = $state("select");
+  let drawColor: number[] = $state([0.9, 0.12, 0.1]);
+  let drawWidth = $state(2);
+  let drawFill = $state(false);
+  let selAnnot: AnnotView | null = $state.raw(null);
+  // Every annotation of the active document, for the Comments panel; null until asked for.
+  let comments: AnnotView[] | null = $state.raw(null);
+  let noteEdit: { a: AnnotView; text: string } | null = $state(null);
   // Set while asking whether to save a document before it closes.
   let unsavedPrompt: { tab: Tab; resolve: (r: "save" | "discard" | "cancel") => void } | null = $state(null);
   let settingsOpen = $state(false);
@@ -155,6 +171,10 @@
     if (t?.viewer) {
       (window as unknown as { __viewer: Viewer }).__viewer = t.viewer;
       hasSel = t.viewer.hasSelection;
+      selAnnot = t.viewer.selectedAnnot;
+      t.viewer.tool = tool;
+      comments = null;
+      if (sidebarOpen && sidebarPanel === "comments") void loadComments();
       refresh(t.id);
       t.viewer.scroller.focus();
     }
@@ -198,6 +218,17 @@
       v.onExternalLink = (uri) => void openUrl(uri).catch((e) => (error = String(e)));
       v.onSelection = (has) => {
         if (id === activeId) hasSel = has;
+      };
+      v.onAnnotSelect = (a) => {
+        if (id === activeId) selAnnot = a;
+      };
+      v.tool = tool;
+      v.drawStyle = { width: drawWidth, fill: drawFill ? drawColor : null, color: drawColor };
+      v.editor = {
+        add: (n) =>
+          runEdit(id, (doc) => annotAdd(doc, { ...n, color: drawColor, author: author || defaultAuthor })),
+        move: (aid, dx, dy) => runEdit(id, (doc) => annotMove(doc, aid, dx, dy)),
+        resize: (aid, rect) => runEdit(id, (doc) => annotResize(doc, aid, rect)),
       };
       const saved = bench ? undefined : lastView(realPath);
       if (saved) v.restore(saved);
@@ -264,34 +295,57 @@
     }
   }
 
-  /** Takes in a change: undo state on the tab, and pages drawn again. */
+  /** Takes in a change: undo state on the tab, pages drawn again, annotations read again. */
   function changed(tabId: number, c: Changed) {
     patchTab(tabId, { dirty: c.status.dirty, canUndo: c.status.can_undo, canRedo: c.status.can_redo });
-    tabs.find((t) => t.id === tabId)?.viewer?.invalidatePages(c.pages);
+    const v = tabs.find((t) => t.id === tabId)?.viewer;
+    v?.invalidatePages(c.pages);
+    v?.reloadAnnots(c.pages);
+    if (tabId === activeId && comments !== null) void loadComments();
   }
 
-  /** Runs edits one after another, so they reach the history in order. */
-  async function edit(fn: (tab: Tab, v: Viewer) => Promise<void>) {
+  /**
+   * Runs an edit of tab `tabId` after the ones before it, so they reach the
+   * history in order.
+   */
+  function runEdit(tabId: number, fn: (doc: number) => Promise<Changed>): Promise<void> {
+    const run = async () => {
+      const tab = tabs.find((t) => t.id === tabId);
+      const v = tab?.viewer;
+      if (!tab || !v) return;
+      try {
+        const c = await fn(v.info.doc);
+        changed(tabId, c);
+      } catch (e) {
+        error = String(e);
+      }
+    };
+    editQueue = editQueue.then(run);
+    return editQueue;
+  }
+
+  /** Edits the active tab (see `runEdit`). */
+  function edit(fn: (tab: Tab, v: Viewer) => Promise<void>) {
     const tab = active;
     const v = tab?.viewer;
     if (!tab || !v || busy) return;
-    busy = true;
-    try {
-      await fn(tab, v);
-    } catch (e) {
-      error = String(e);
-    } finally {
-      busy = false;
-    }
+    editQueue = editQueue.then(() => fn(tab, v).catch((e) => void (error = String(e))));
   }
 
   function markup(kind: MarkupKind) {
-    void edit(async (tab, v) => {
+    edit(async (tab, v) => {
       const parts = await v.selectionRects();
       for (const { page, rects } of parts) {
         changed(
           tab.id,
-          await annotMarkup(v.info.doc, page, kind, rects, markupColor, 1, author || defaultAuthor),
+          await annotAdd(v.info.doc, {
+            page,
+            kind,
+            rects,
+            color: markupColor,
+            opacity: 1,
+            author: author || defaultAuthor,
+          }),
         );
       }
       v.clearSelection();
@@ -299,11 +353,101 @@
   }
 
   function undo() {
-    void edit(async (tab, v) => changed(tab.id, await editUndo(v.info.doc)));
+    edit(async (tab, v) => changed(tab.id, await editUndo(v.info.doc)));
   }
 
   function redo() {
-    void edit(async (tab, v) => changed(tab.id, await editRedo(v.info.doc)));
+    edit(async (tab, v) => changed(tab.id, await editRedo(v.info.doc)));
+  }
+
+  function setTool(t: Tool) {
+    tool = t;
+    if (viewer) viewer.tool = t;
+  }
+
+  function syncDrawStyle() {
+    if (viewer) viewer.drawStyle = { width: drawWidth, fill: drawFill ? drawColor : null, color: drawColor };
+  }
+
+  /** Restyles the selected annotation, or sets the style for drawing. */
+  function restyle(style: AnnotStyle) {
+    const a = selAnnot;
+    if (a && viewer) {
+      const id = active!.id;
+      void runEdit(id, (doc) => annotStyle(doc, a.id, style));
+    }
+  }
+
+  const same = (a: number[], b: number[]) =>
+    a.map((v) => v.toFixed(2)).join() === b.map((v) => v.toFixed(2)).join();
+  /** The colour the swatches show: the selected annotation's, the drawing tool's, or text markup's. */
+  const currentColor = $derived.by(() =>
+    selAnnot ? selAnnot.color : tool !== "select" ? drawColor : markupColor,
+  );
+
+  function pickColor(c: number[]) {
+    const a = selAnnot;
+    if (a) {
+      restyle({ color: c, ...(a.fill ? { fill: c } : {}) });
+      if (a.kind === "highlight" || a.kind === "underline" || a.kind === "strikeout" || a.kind === "squiggly")
+        markupColor = c;
+      else drawColor = c;
+    } else if (tool !== "select") {
+      drawColor = c;
+    } else {
+      markupColor = c;
+      updateSettings({ markupColor: c });
+    }
+    syncDrawStyle();
+  }
+
+  function pickWidth(w: number) {
+    drawWidth = w;
+    syncDrawStyle();
+    if (selAnnot && selAnnot.kind !== "other") restyle({ width: w });
+  }
+
+  function toggleFill() {
+    drawFill = !drawFill;
+    syncDrawStyle();
+    if (selAnnot && (selAnnot.kind === "square" || selAnnot.kind === "circle"))
+      restyle({ fill: selAnnot.fill ? null : selAnnot.color });
+  }
+
+  function deleteSelected() {
+    const a = selAnnot;
+    if (!a || !active) return;
+    viewer?.selectAnnot(null);
+    void runEdit(active.id, (doc) => annotRemove(doc, a.id));
+  }
+
+  function saveNote() {
+    const n = noteEdit;
+    noteEdit = null;
+    if (n && active) void runEdit(active.id, (doc) => annotStyle(doc, n.a.id, { contents: n.text }));
+    viewer?.scroller.focus();
+  }
+
+  /** Reads every annotation of the active document for the Comments panel. */
+  async function loadComments() {
+    const v = viewer;
+    if (!v) return;
+    try {
+      const all = await annotsAll(v.info.doc);
+      if (v === viewer) comments = all;
+    } catch (e) {
+      comments = [];
+      error = String(e);
+    }
+  }
+
+  /** Goes to an annotation from the Comments panel and selects it. */
+  function showComment(a: AnnotView) {
+    const v = viewer;
+    if (!v) return;
+    setTool("select");
+    v.navigate(a.page, Math.max(0, a.rect[1] - 0.05));
+    v.selectAnnot(a);
   }
 
   /** Saves `tab`, to a new file with `as`. Returns true when saved. */
@@ -325,9 +469,6 @@
         canUndo: r.status.can_undo,
         canRedo: r.status.can_redo,
       });
-      if (r.full) error = t("save.full");
-      // Pages are now drawn from the saved file.
-      v.invalidatePages(v.pagesInView(800));
       return true;
     } catch (e) {
       error = t("save.failed", { error: String(e) });
@@ -336,9 +477,11 @@
   }
 
   function saveActive(as: boolean) {
-    if (active && !busy) {
+    const tab = active;
+    if (tab && !busy) {
       busy = true;
-      void save(active, as).finally(() => (busy = false));
+      // After the edits already asked for.
+      editQueue = editQueue.then(() => save(tab, as).then(() => {})).finally(() => (busy = false));
     }
   }
 
@@ -376,9 +519,10 @@
     updateSettings({ sidebarOpen });
   }
 
-  function setPanel(p: "pages" | "bookmarks") {
+  function setPanel(p: "pages" | "bookmarks" | "comments") {
     sidebarPanel = p;
-    updateSettings({ sidebarPanel: p });
+    if (p === "comments") void loadComments();
+    else updateSettings({ sidebarPanel: p });
   }
 
   function scrollBy(dy: number) {
@@ -421,6 +565,9 @@
     if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "a")
       return () => void v.selectPage(v.currentPage());
     if (e.key === "Escape" && v.hasSelection) return () => v.clearSelection();
+    if ((e.key === "Delete" || e.key === "Backspace") && v.selectedAnnot) return () => deleteSelected();
+    if (e.key === "Escape" && v.selectedAnnot) return () => v.selectAnnot(null);
+    if (e.key === "Escape" && tool !== "select") return () => setTool("select");
     if (e.altKey && e.key === "ArrowLeft") return () => v.goBack();
     if (e.altKey && e.key === "ArrowRight") return () => v.goForward();
     if (e.ctrlKey && e.shiftKey && e.code === "Equal") return () => v.rotate(1);
@@ -489,7 +636,7 @@
 
   function onKey(e: KeyboardEvent) {
     // Dialogs handle their own keys.
-    if (printOpen || settingsOpen || pwPrompt || unsavedPrompt) return;
+    if (printOpen || settingsOpen || pwPrompt || unsavedPrompt || noteEdit) return;
     const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement;
     const action = appKeyAction(e) ?? (viewer && !typing ? keyAction(e, viewer) : null);
     if (action) {
@@ -784,23 +931,36 @@
       >
         ↷
       </button>
-      <span class="sep"></span>
-      <span class="marks" role="group" aria-label={t("mark.color")}>
-        {#each MARKUP_COLORS as c (c.css)}
-          <button
-            class="swatch"
-            class:active={markupColor.join() === c.rgb.join()}
-            style:background={c.css}
-            aria-label={c.css}
-            aria-pressed={markupColor.join() === c.rgb.join()}
-            title={t("mark.color")}
-            onclick={() => {
-              markupColor = c.rgb;
-              updateSettings({ markupColor: c.rgb });
-            }}
-          ></button>
-        {/each}
-      </span>
+    {:else}
+      <button onclick={openDialog} title={t("app.openTitle")}>{t("app.open")}</button>
+      <span class="name">edits</span>
+    {/if}
+    <span class="grow"></span>
+    <button
+      onclick={() => (settingsOpen = true)}
+      title={t("bar.settingsTitle")}
+      aria-label={t("bar.settings")}
+    >
+      ⚙
+    </button>
+  </header>
+  {#if viewer}
+    <div class="ctxbar" role="toolbar" aria-label={t("ctx.label")}>
+      {#if !selAnnot || selAnnot.kind !== "other"}
+        <span class="marks" role="group" aria-label={t("mark.color")}>
+          {#each MARKUP_COLORS.concat([{ rgb: [0, 0, 0], css: "#000" }]) as c (c.css)}
+            <button
+              class="swatch"
+              class:active={same(currentColor, c.rgb)}
+              aria-pressed={same(currentColor, c.rgb)}
+              style:background={c.css}
+              aria-label={c.css}
+              title={t("mark.color")}
+              onclick={() => pickColor(c.rgb)}
+            ></button>
+          {/each}
+        </span>
+      {/if}
       <button
         disabled={!hasSel}
         onclick={() => markup("highlight")}
@@ -838,19 +998,56 @@
       >
         <span class="mk sq">A</span>
       </button>
-    {:else}
-      <button onclick={openDialog} title={t("app.openTitle")}>{t("app.open")}</button>
-      <span class="name">edits</span>
-    {/if}
-    <span class="grow"></span>
-    <button
-      onclick={() => (settingsOpen = true)}
-      title={t("bar.settingsTitle")}
-      aria-label={t("bar.settings")}
-    >
-      ⚙
-    </button>
-  </header>
+      <span class="sep"></span>
+      <span class="tools" role="group" aria-label={t("tool.group")}>
+        {#each [["select", "↖"], ["ink", "✎"], ["line", "╱"], ["arrow", "↗"], ["square", "▭"], ["circle", "◯"]] as [id, icon] (id)}
+          <button
+            class:active={tool === id}
+            aria-pressed={tool === id}
+            title={t(`tool.${id}` as "tool.select")}
+            aria-label={t(`tool.${id}` as "tool.select")}
+            onclick={() => setTool(id as Tool)}
+          >
+            {icon}
+          </button>
+        {/each}
+      </span>
+      {#if tool !== "select" || selAnnot}<span class="sep"></span>{/if}
+      {#if selAnnot}
+        <span class="ctx-kind">
+          {t(`kind.${selAnnot.kind}` as "kind.other")}{#if selAnnot.author}<span class="ctx-by" dir="auto">
+              · {selAnnot.author}
+            </span>{/if}
+        </span>
+      {/if}
+      {#if (!selAnnot && tool !== "select") || (selAnnot && ["ink", "line", "square", "circle"].includes(selAnnot.kind))}
+        <label class="ctx-width">
+          {t("ctx.width")}
+          <select
+            value={String(selAnnot ? selAnnot.width : drawWidth)}
+            onchange={(e) => pickWidth(Number(e.currentTarget.value))}
+          >
+            {#each [0.5, 1, 2, 3, 5, 8] as w (w)}<option value={String(w)}>{w} pt</option>{/each}
+          </select>
+        </label>
+      {/if}
+      {#if (!selAnnot && (tool === "square" || tool === "circle")) || (selAnnot && (selAnnot.kind === "square" || selAnnot.kind === "circle"))}
+        <button
+          class:active={selAnnot ? !!selAnnot.fill : drawFill}
+          aria-pressed={selAnnot ? !!selAnnot.fill : drawFill}
+          onclick={toggleFill}
+        >
+          {t("ctx.fill")}
+        </button>
+      {/if}
+      {#if selAnnot}
+        <button onclick={() => selAnnot && (noteEdit = { a: selAnnot, text: selAnnot.contents })}>
+          {t("ctx.note")}
+        </button>
+        <button onclick={deleteSelected} title={t("ctx.deleteTitle")}>{t("ctx.delete")}</button>
+      {/if}
+    </div>
+  {/if}
   {#if update}
     <div class="update" role="status">
       {#if updatePct >= 0}
@@ -865,7 +1062,16 @@
   <div class="body">
     {#if viewer && active && sidebarOpen}
       {#key active.id}
-        <Sidebar {viewer} {page} outline={active.outline} panel={sidebarPanel} onpanel={setPanel} />
+        <Sidebar
+          {viewer}
+          {page}
+          outline={active.outline}
+          panel={sidebarPanel}
+          onpanel={setPanel}
+          {comments}
+          selected={selAnnot?.id ?? null}
+          oncomment={showComment}
+        />
       {/key}
     {/if}
     <main onwheel={onWheel}>
@@ -951,6 +1157,35 @@
               </ul>
             {/if}
           </div>
+        </div>
+      {/if}
+      {#if noteEdit}
+        <div class="overlay">
+          <form
+            class="password"
+            onsubmit={(e) => {
+              e.preventDefault();
+              saveNote();
+            }}
+          >
+            <label>
+              {t("ctx.noteTitle")}
+              <!-- svelte-ignore a11y_autofocus -->
+              <textarea
+                rows="5"
+                dir="auto"
+                autofocus
+                bind:value={noteEdit.text}
+                onkeydown={(e) => {
+                  if (e.key === "Escape") noteEdit = null;
+                  if (e.key === "Enter" && e.ctrlKey) saveNote();
+                }}></textarea>
+            </label>
+            <div class="actions">
+              <button type="submit" class="primary">{t("ctx.noteSave")}</button>
+              <button type="button" onclick={() => (noteEdit = null)}>{t("common.cancel")}</button>
+            </div>
+          </form>
         </div>
       {/if}
       {#if unsavedPrompt}
@@ -1087,6 +1322,45 @@
   }
   .grow {
     flex: 1;
+  }
+  .ctxbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 34px;
+    padding: 0 12px;
+    background: var(--bar);
+    border-bottom: 1px solid var(--edge);
+    flex: none;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  .ctx-kind {
+    font-weight: 600;
+  }
+  .ctx-by {
+    font-weight: 400;
+    color: var(--muted);
+  }
+  .ctx-width {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--muted);
+  }
+  .tools {
+    display: flex;
+    gap: 2px;
+  }
+  textarea {
+    width: min(420px, 80vw);
+    background: var(--control);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 8px;
+    font: inherit;
+    resize: vertical;
   }
   .dirty {
     color: var(--accent);

@@ -2,8 +2,8 @@
   // Side panel: page thumbnails and the bookmark tree for the active tab.
   import { onDestroy, tick } from "svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
-  import type { OutlineItem } from "./api";
-  import { t } from "./i18n.svelte";
+  import type { AnnotView, OutlineItem } from "./api";
+  import { lang, t } from "./i18n.svelte";
   import type { Viewer } from "./viewer";
 
   interface Props {
@@ -11,10 +11,23 @@
     /** Current page, 0-based. */
     page: number;
     outline: OutlineItem[] | null;
-    panel: "pages" | "bookmarks";
-    onpanel: (p: "pages" | "bookmarks") => void;
+    panel: "pages" | "bookmarks" | "comments";
+    onpanel: (p: "pages" | "bookmarks" | "comments") => void;
+    /** Every annotation of the document; null while loading. */
+    comments: AnnotView[] | null;
+    selected: number | null;
+    oncomment: (a: AnnotView) => void;
   }
-  let { viewer, page, outline, panel, onpanel }: Props = $props();
+  let { viewer, page, outline, panel, onpanel, comments, selected, oncomment }: Props = $props();
+
+  const css = (c: number[]) => `rgb(${c.map((v) => Math.round(v * 255)).join(" ")})`;
+  /** "D:20261127101500Z" as a short local date. */
+  function when(d: string): string {
+    const m = /^D:(\d{4})(\d{2})(\d{2})(\d{2})?(\d{2})?/.exec(d);
+    if (!m) return "";
+    const date = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] ?? 0), +(m[5] ?? 0)));
+    return date.toLocaleDateString(lang());
+  }
 
   // ------------------------------------------------------------ thumbnails
   const THUMB_W = 132; // CSS px
@@ -129,7 +142,7 @@
     else expanded.add(id);
   }
 
-  async function showPanel(p: "pages" | "bookmarks") {
+  async function showPanel(p: "pages" | "bookmarks" | "comments") {
     onpanel(p);
     await tick();
   }
@@ -184,6 +197,9 @@
     <button role="tab" aria-selected={panel === "pages"} onclick={() => showPanel("pages")}>
       {t("side.pages")}
     </button>
+    <button role="tab" aria-selected={panel === "comments"} onclick={() => showPanel("comments")}>
+      {t("side.comments")}
+    </button>
     <button role="tab" aria-selected={panel === "bookmarks"} onclick={() => showPanel("bookmarks")}>
       {t("side.bookmarks")}
     </button>
@@ -218,6 +234,34 @@
         {/each}
       </div>
     </div>
+  {:else if panel === "comments"}
+    <div class="comments">
+      {#if comments === null}
+        <p class="note">{t("side.loading")}</p>
+      {:else if comments.length === 0}
+        <p class="note">{t("side.noComments")}</p>
+      {:else}
+        <ul>
+          {#each comments as c (c.id)}
+            <li>
+              <button class="comment" class:current={c.id === selected} onclick={() => oncomment(c)}>
+                <span class="c-head">
+                  <span class="dot" style:background={css(c.color)}></span>
+                  <span class="c-kind">{t(`kind.${c.kind}` as "kind.other")}</span>
+                  <span class="c-page">{t("side.page", { n: c.page + 1 })}</span>
+                </span>
+                {#if c.contents}<span class="c-text" dir="auto">{c.contents}</span>{/if}
+                {#if c.author || c.modified}
+                  <span class="c-meta" dir="auto">
+                    {c.author}{c.author && c.modified ? " · " : ""}{when(c.modified)}
+                  </span>
+                {/if}
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </div>
   {:else}
     <div class="bookmarks">
       {#if outline === null}
@@ -249,7 +293,8 @@
   }
   .tabs button {
     flex: 1;
-    padding: 5px 0;
+    padding: 5px 2px;
+    font-size: 12px;
     background: transparent;
     color: var(--muted);
     border: 0;
@@ -262,6 +307,7 @@
     border-bottom-color: var(--accent);
   }
   .thumbs,
+  .comments,
   .bookmarks {
     flex: 1;
     overflow: auto;
@@ -356,6 +402,59 @@
   button:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: -2px;
+  }
+  .comments ul {
+    list-style: none;
+    margin: 0;
+    padding: 4px 0;
+  }
+  .comment {
+    display: grid;
+    gap: 2px;
+    width: 100%;
+    padding: 6px 10px;
+    background: none;
+    border: 0;
+    color: var(--text);
+    font: inherit;
+    text-align: start;
+    cursor: pointer;
+  }
+  .comment:hover {
+    background: var(--control-hover);
+  }
+  .comment.current {
+    background: var(--selected);
+  }
+  .c-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    flex: none;
+  }
+  .c-kind {
+    font-weight: 600;
+    flex: 1;
+  }
+  .c-page,
+  .c-meta {
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .c-text {
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
   }
   .note {
     padding: 12px;

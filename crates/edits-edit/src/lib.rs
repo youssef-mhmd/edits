@@ -1,12 +1,11 @@
-//! Editing: annotations as data, the undo history, appearance streams and
-//! incremental save. No PDFium here; `edits-core` keeps PDFium's copy of the
-//! document in step (see [`edits::LayerOp`]).
+//! Editing: annotations as data, the undo history, appearance streams, and
+//! a small PDF reader and incremental-update writer. No PDFium here: PDFium
+//! renders the base file with the update this crate builds on top.
 
 pub mod ap;
-pub mod edits;
 pub mod model;
-pub mod save;
+pub mod pdf;
+pub mod session;
 
-pub use edits::{Edits, LayerOp, Listed, Status};
-pub use model::{Annot, AnnotId, Kind, ObjRef, pdf_date_now};
-pub use save::{PageChange, SaveError, SaveOutcome, save_incremental};
+pub use model::{Annot, AnnotId, Kind, pdf_date_now};
+pub use session::{EditError, Listed, Session, Status, temp_path_for};

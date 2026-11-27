@@ -134,6 +134,38 @@ body,
   background: rgb(60 130 230 / 0.35);
 }
 
+/* Annotation selection and drawing (viewer.ts drawAnnotLayer). */
+.page > .alayer {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+  transform-origin: center;
+}
+
+.alayer > .asel {
+  position: absolute;
+  outline: 1.5px dashed var(--accent);
+  outline-offset: 2px;
+}
+
+.alayer > .ahandle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  margin: -5px 0 0 -5px;
+  background: #fff;
+  border: 1.5px solid var(--accent);
+  border-radius: 2px;
+}
+
+.alayer > .apreview {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
 .page > a.link {
   position: absolute;
   z-index: 2;

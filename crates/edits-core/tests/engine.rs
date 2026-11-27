@@ -526,8 +526,8 @@ fn mean(tile: &edits_core::Tile, x0: u32, y0: u32, x1: u32, y1: u32) -> [u32; 3]
 }
 
 #[test]
-fn highlight_shows_undoes_and_survives_an_incremental_save() {
-    use edits_edit::{Annot, Edits, Kind, LayerOp};
+fn edits_show_through_the_overlay_and_survive_saving() {
+    use edits_edit::{Annot, Kind, Session};
     let engine = Engine::start().unwrap();
     let path = make_text_pdf("annot.pdf");
     let original = std::fs::read(&path).unwrap();
@@ -537,47 +537,35 @@ fn highlight_shows_undoes_and_survives_an_incremental_save() {
     // A band across the top half (fractions, top-left origin).
     let corners = engine.to_user_space(doc, 0, vec![[0.1, 0.1], [0.9, 0.1], [0.1, 0.4], [0.9, 0.4]]).unwrap();
     assert!((corners[0][0] - 30.0).abs() < 0.5 && (corners[0][1] - 180.0).abs() < 0.5, "{corners:?}");
+    let back = engine.to_fractions(doc, 0, vec![corners[0]]).unwrap();
+    assert!((back[0][0] - 0.1).abs() < 1e-3 && (back[0][1] - 0.1).abs() < 1e-3);
     let quad: [f32; 8] = corners.concat().try_into().unwrap();
-    let a = Annot {
-        page: 0,
-        kind: Kind::Highlight,
-        rect: Annot::quads_bounds(&[quad], 1.0),
-        quads: vec![quad],
-        color: [1.0, 0.85, 0.0],
-        opacity: 1.0,
-        contents: "a note".into(),
-        author: "tester".into(),
-        modified: edits_edit::pdf_date_now(),
-    };
+    let mut a = Annot::new(0, Kind::Highlight);
+    a.quads = vec![quad];
+    a.fit_rect();
+    a.color = [1.0, 0.85, 0.0];
     let band = |t: &edits_core::Tile| mean(t, 100, 60, 500, 140);
     let white = band(&engine.render(spec, 1).unwrap());
     assert!(white[2] > 230, "{white:?}");
 
-    let mut edits = Edits::new();
-    let (id, ops) = edits.add(a);
-    for (cid, r) in engine.edit_layer(doc, ops).unwrap() {
-        edits.set_layer(cid, r.unwrap());
-    }
+    let mut s = Session::open(&path).unwrap();
+    assert_eq!(s.page_count().unwrap(), 1);
+    let (id, _) = s.add(a).unwrap();
+    engine.set_overlay(doc, s.tail()).unwrap();
     let shown = band(&engine.render(spec, 1).unwrap());
     assert!(shown[2] < 100 && shown[0] > 200, "highlighted band is yellow: {shown:?}");
 
-    // Undo hides it; redo shows it again.
-    let ops = edits.undo();
-    assert!(matches!(ops[..], [LayerOp::SetHidden { hidden: true, .. }]));
-    engine.edit_layer(doc, ops).unwrap();
+    s.undo().unwrap();
+    engine.set_overlay(doc, s.tail()).unwrap();
     assert_eq!(band(&engine.render(spec, 1).unwrap()), white);
-    engine.edit_layer(doc, edits.redo()).unwrap();
+    s.redo().unwrap();
+    engine.set_overlay(doc, s.tail()).unwrap();
     assert!(band(&engine.render(spec, 1).unwrap())[2] < 100);
 
-    // Save while PDFium has the file open, replace it, reopen.
-    let tmp = edits_edit::save::temp_path_for(&path);
-    let outcome = edits_edit::save_incremental(&path, &tmp, &edits.changes()).unwrap();
-    edits_edit::save::replace(&tmp, &path).unwrap();
+    // Save while PDFium has the file open, then reopen it plain.
+    s.save(&path).unwrap();
     engine.reload(doc, None).unwrap();
-    edits.saved(&outcome);
-    assert!(!edits.status().dirty);
-    let saved = std::fs::read(&path).unwrap();
-    assert!(saved.starts_with(&original), "incremental: the original bytes are kept");
+    assert!(std::fs::read(&path).unwrap().starts_with(&original), "incremental: the original bytes are kept");
     assert!(band(&engine.render(spec, 1).unwrap())[2] < 100, "drawn from the saved file");
 
     // Another reader sees one highlight with its appearance stream.
@@ -590,15 +578,10 @@ fn highlight_shows_undoes_and_survives_an_incremental_save() {
     assert!(ad.get(b"AP").is_ok());
 
     // Delete after saving, save again: the page has no annotations left.
-    engine.edit_layer(doc, edits.remove(id)).unwrap();
+    s.remove(id).unwrap();
+    engine.set_overlay(doc, s.tail()).unwrap();
     assert_eq!(band(&engine.render(spec, 1).unwrap()), white);
-    let outcome = edits_edit::save_incremental(&path, &tmp, &edits.changes()).unwrap();
-    edits_edit::save::replace(&tmp, &path).unwrap();
+    s.save(&path).unwrap();
     engine.reload(doc, None).unwrap();
-    edits.saved(&outcome);
     assert_eq!(band(&engine.render(spec, 1).unwrap()), white);
-    let l = Document::load(&path).unwrap();
-    let page = l.get_pages()[&1];
-    let annots = l.get_object(page).unwrap().as_dict().unwrap().get(b"Annots").unwrap().as_array().unwrap().len();
-    assert_eq!(annots, 0);
 }

@@ -20,9 +20,6 @@ pub type DocId = u32;
 /// Search matches on one page: its index and character ranges [start, end).
 pub type PageHits = (u32, Vec<[u32; 2]>);
 
-/// A created annotation and its index on its page, or why it failed.
-pub type Created = (edits_edit::AnnotId, Result<u32, EngineError>);
-
 /// Identifies a queued job, for cancelling or re-prioritising it.
 pub type Ticket = u64;
 
@@ -637,26 +634,47 @@ impl Engine {
         self.call(doc, CONTROL_PRIORITY - 1, move |od| crate::annots::to_user_space(od.page(page)?, &points))
     }
 
-    /// Applies annotation changes to PDFium's copy of the document, so pages
-    /// render with them. Returns the index of each created annotation. Until
-    /// the document is saved and reloaded, its pages render on the render
-    /// thread only: workers have their own copy without the changes.
-    pub fn edit_layer(&self, doc: DocId, ops: Vec<edits_edit::LayerOp>) -> Result<Vec<Created>, EngineError> {
-        // Off the workers before the change is made.
-        self.shared.lock().sources.remove(&doc);
-        self.call(doc, CONTROL_PRIORITY - 1, move |od| Ok(crate::annots::apply(od, &ops)))
+    /// PDF user space to page fractions.
+    pub fn to_fractions(&self, doc: DocId, page: u32, points: Vec<[f32; 2]>) -> Result<Vec<[f32; 2]>, EngineError> {
+        self.call(doc, CONTROL_PRIORITY - 1, move |od| crate::annots::to_fractions(od.page(page)?, &points))
     }
 
-    /// Opens the document's file again after it was replaced by a save,
-    /// or with `path`, the file it was saved as. Edits not saved are dropped
-    /// from PDFium's copy.
+    /// Shows the document with `tail`, an incremental update built by
+    /// `edits_edit`, on top of its file (None: the file as it is). While a
+    /// document has an update, its pages render on the render thread only;
+    /// workers read the file without it.
+    pub fn set_overlay(&self, doc: DocId, tail: Option<std::sync::Arc<Vec<u8>>>) -> Result<(), EngineError> {
+        self.reopen(doc, None, Some(tail))
+    }
+
+    /// Opens the document's file again after it was replaced by a save, or
+    /// with `path`, the file it was saved as. Any update shown is dropped.
     pub fn reload(&self, doc: DocId, path: Option<PathBuf>) -> Result<(), EngineError> {
+        self.reopen(doc, path, Some(None))
+    }
+
+    fn reopen(
+        &self,
+        doc: DocId,
+        path: Option<PathBuf>,
+        tail: Option<Option<std::sync::Arc<Vec<u8>>>>,
+    ) -> Result<(), EngineError> {
         let shared = self.shared.clone();
+        if matches!(tail, Some(Some(_))) {
+            // Off the workers before the change shows.
+            self.shared.lock().sources.remove(&doc);
+        }
         self.call(doc, CONTROL_PRIORITY, move |od| {
             if let Some(p) = path {
                 od.path = p;
             }
+            if let Some(t) = tail {
+                od.tail = t;
+            }
             od.reload()?;
+            if od.tail.is_some() {
+                return Ok(());
+            }
             let mut st = shared.lock();
             let generation = st.next_generation();
             st.sources.insert(

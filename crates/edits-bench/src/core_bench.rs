@@ -356,52 +356,45 @@ pub fn text_check(expected_dir: &Path, corpus: &Path) -> Res<bool> {
 
 /// Save timing (PRD 7: ≤ 200 ms after adding annotations). Copies FILE to a
 /// temporary folder, adds a highlight on the first page, and times the
-/// incremental save, the replace and the reopen. `edits-bench save FILE`
+/// save (copy beside, append the update, rename) and the reopen.
+/// `edits-bench save FILE`
 pub fn save(file: &Path) -> Res<bool> {
-    use edits_edit::{Annot, Edits, Kind};
+    use edits_edit::{Annot, Kind, Session};
     let dir = std::env::temp_dir().join(format!("edits-bench-save-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let copy = dir.join(file.file_name().ok_or("no file name")?);
     std::fs::copy(file, &copy)?;
     let engine = Engine::start()?;
     let info = engine.open(&copy, None)?;
+    let mut session = Session::open(&copy)?;
     let mut times = Vec::new();
-    let mut edits = Edits::new();
+    let mut edit_ms = Vec::new();
     for round in 0..5 {
         let y = 0.1 + round as f32 * 0.05;
         let c = engine.to_user_space(info.doc, 0, vec![[0.1, y], [0.6, y], [0.1, y + 0.03], [0.6, y + 0.03]])?;
-        let quad: [f32; 8] = [c[0][0], c[0][1], c[1][0], c[1][1], c[2][0], c[2][1], c[3][0], c[3][1]];
-        let (_, ops) = edits.add(Annot {
-            page: 0,
-            kind: Kind::Highlight,
-            rect: Annot::quads_bounds(&[quad], 1.0),
-            quads: vec![quad],
-            color: [1.0, 0.9, 0.2],
-            opacity: 1.0,
-            contents: String::new(),
-            author: "bench".into(),
-            modified: edits_edit::pdf_date_now(),
-        });
-        for (id, r) in engine.edit_layer(info.doc, ops)? {
-            edits.set_layer(id, r?);
-        }
+        let mut a = Annot::new(0, Kind::Highlight);
+        a.quads = vec![[c[0][0], c[0][1], c[1][0], c[1][1], c[2][0], c[2][1], c[3][0], c[3][1]]];
+        a.fit_rect();
+        a.color = [1.0, 0.9, 0.2];
         let t = Instant::now();
-        let tmp = edits_edit::save::temp_path_for(&copy);
-        let outcome = edits_edit::save_incremental(&copy, &tmp, &edits.changes())?;
-        edits_edit::save::replace(&tmp, &copy)?;
+        session.add(a)?;
+        engine.set_overlay(info.doc, session.tail())?;
+        edit_ms.push(ms(t));
+        let t = Instant::now();
+        session.save(&copy)?;
         engine.reload(info.doc, None)?;
-        edits.saved(&outcome);
         times.push(ms(t));
     }
     engine.close(info.doc);
     let size_mb = std::fs::metadata(&copy)?.len() as f64 / 1e6;
     let s = summarize(&times);
     println!(
-        "{} ({size_mb:.1} MB): save p50 {:.0} / max {:.0} ms ({:?})",
+        "{} ({size_mb:.1} MB): save p50 {:.0} / max {:.0} ms ({:?}); edit shown p50 {:.0} ms",
         file.display(),
         s.p50,
         s.max,
-        times.iter().map(|t| t.round()).collect::<Vec<_>>()
+        times.iter().map(|t| t.round()).collect::<Vec<_>>(),
+        summarize(&edit_ms).p50
     );
     let check = Check::new("save after adding a highlight (p50)", s.p50, targets::SAVE_MS, "ms");
     targets::print(std::slice::from_ref(&check));

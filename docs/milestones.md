@@ -107,17 +107,19 @@ Notes: M1 ships with the open M1.4 items above (memory over target, heavy pages,
 - [x] Save, Save As, incremental save, safe write through a temporary file *(Ctrl S, Ctrl Shift S; changes are appended to the original bytes; encrypted files are rewritten whole by PDFium; asks before closing a tab or the window with unsaved changes)*
 - [ ] Autosave recovery file
 - [x] Highlight, underline, strikethrough, squiggly *(from the text selection, five colours, with appearance streams)*
-- [ ] Freehand, line, arrow, rectangle, ellipse
+- [x] Freehand, line, arrow, rectangle, ellipse *(pen, line, arrow, rectangle, ellipse tools; colour, width, fill)*
 - [ ] Sticky notes and text boxes, with Arabic shaping (`edits-text`: rustybuzz, bidi, font embedding and subsetting)
 - [ ] Stamps and images
-- [ ] Select, move, resize, restyle, delete; annotation list panel
-- [ ] Annotations made in other apps display and can be edited
+- [x] Select, move, resize, restyle, delete; annotation list panel *(click to select, drag to move, handles to resize, Delete; colour, width, fill, note; Comments tab in the side panel)*
+- [x] Annotations made in other apps display and can be edited *(moved, resized, deleted and given notes keeping their own look; recoloured when edits can draw the kind; links and form fields are left alone)*
 
 Done when: annotations saved by edits show correctly in Chrome, Edge and Acrobat Reader, and saving takes ≤ 200 ms.
 
 Notes so far:
-- Save (`edits-bench save FILE`): 14 ms (0.1 MB), 31 ms (1.4 MB, 2,000 pages), 38 ms (10 MB); 205 ms for a 107 MB book and 795 ms for 506 MB, because the whole file is read, parsed by lopdf and copied. A reader that loads only the cross-reference data and the changed pages would fix that. PDFium's own full rewrite takes 252 ms for 10 MB and 12 s for 506 MB.
-- Not yet checked in Chrome, Edge and Acrobat Reader.
+- Design: edits reads files with its own lazy reader (`edits-bench pdf-check`: all 73 intact corpus files match PDFium) and writes incremental updates itself; PDFium shows file + update, so the screen is what will be saved.
+- Save (`edits-bench save FILE`): 12 ms (0.1 MB), 19 ms (1.4 MB, 2,000 pages), 21 ms (10 MB), 96 ms (107 MB book); 380 ms for 506 MB (copying the file). An edit shows in 1-16 ms. PDFium's own full rewrite takes 252 ms for 10 MB and 12 s for 506 MB.
+- Encrypted files cannot be annotated yet (M10); damaged files only after Save As.
+- Saved files checked with a second, independent renderer (MuPDF, local check only): shapes, ink and arrows draw from edits' appearance streams. Not yet checked in Chrome, Edge and Acrobat Reader.
 
 ## M3: Organize pages (release 0.3)
 

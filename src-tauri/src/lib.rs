@@ -116,7 +116,7 @@ async fn open_doc(
     // Index the text in the background, so search can start at once.
     text::start_index(indexer, info.doc);
     if let Some(p) = opened_path {
-        edits.opened(info.doc, p);
+        edits.opened(info.doc, p, info.page_count);
     }
     Ok(info)
 }
@@ -228,11 +228,15 @@ pub fn run() {
             state::load_state,
             state::save_state,
             state::third_party_licenses,
-            edit::annot_markup,
+            edit::annots_page,
+            edit::annots_all,
+            edit::annot_add,
+            edit::annot_move,
+            edit::annot_resize,
+            edit::annot_style,
             edit::annot_remove,
             edit::edit_undo,
             edit::edit_redo,
-            edit::annots_on_page,
             edit::save_doc,
             edit::edit_status,
             edit::user_name,

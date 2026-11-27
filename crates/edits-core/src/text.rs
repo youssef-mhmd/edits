@@ -65,6 +65,12 @@ impl PageMap {
         Some((((m[4] * u - m[1] * v) / det) as f32, ((m[0] * v - m[3] * u) / det) as f32))
     }
 
+    pub(crate) fn apply_unclamped(&self, x: f32, y: f32) -> (f32, f32) {
+        let (x, y) = (x as f64, y as f64);
+        let m = &self.m;
+        ((m[0] * x + m[1] * y + m[2]) as f32, (m[3] * x + m[4] * y + m[5]) as f32)
+    }
+
     fn apply(&self, x: f32, y: f32) -> (f32, f32) {
         let (x, y) = (x as f64, y as f64);
         let m = &self.m;
