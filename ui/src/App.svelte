@@ -1200,6 +1200,22 @@
     return u?.version ?? null;
   }
 
+  /** How often a running edits looks for an update again. */
+  const UPDATE_EVERY_MS = 4 * 60 * 60 * 1000;
+  let updateTimer = 0;
+
+  /** Looks for an update now and then every few hours, while the setting is on. */
+  function watchUpdates() {
+    const look = () => {
+      // Nothing to do while one is shown or being installed; never in tests.
+      if (!checkUpdates || update || navigator.webdriver) return;
+      void checkForUpdate().catch(() => {});
+    };
+    setTimeout(look, 5000);
+    clearInterval(updateTimer);
+    updateTimer = window.setInterval(look, UPDATE_EVERY_MS);
+  }
+
   async function install() {
     if (!update) return;
     updatePct = 0;
@@ -1241,8 +1257,8 @@
         ocrOptions = settings().ocr;
         ocrSkipText = settings().ocrSkipText;
         applyLook(theme, language);
-        // Look for an update once start-up is well over; never in tests.
-        if (checkUpdates && !navigator.webdriver) setTimeout(() => void checkForUpdate(), 5000);
+        // Look for an update once start-up is well over, then every few hours.
+        watchUpdates();
       }
       const v = s.file ? await open(null) : null;
       if (s.bench) {
@@ -1314,6 +1330,7 @@
       void unlistenResize.then((f) => f());
       void unlistenFiles.then((f) => f());
       void unlistenOcr.then((f) => f());
+      clearInterval(updateTimer);
       void unlistenClose.then((f) => f());
     };
   });
