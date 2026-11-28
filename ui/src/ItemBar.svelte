@@ -284,7 +284,7 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
   }
   .font {
     max-width: 170px;
@@ -324,7 +324,52 @@
     gap: 4px;
     color: var(--muted);
   }
+  /* Flat, like the rest of the ribbon. */
+  button:not(.swatch) {
+    min-width: 32px;
+    min-height: 32px;
+    padding: 2px 8px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    transition: background-color 0.12s;
+  }
+  button:not(.swatch):hover {
+    background: var(--control-hover);
+  }
+  select,
+  input {
+    height: 30px;
+    padding: 0 6px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--ribbon);
+    color: var(--text);
+    font: inherit;
+  }
+  select:hover,
+  input:hover {
+    border-color: var(--accent);
+  }
+  .swatch {
+    cursor: pointer;
+    transition: transform 0.12s;
+  }
+  .swatch:hover {
+    transform: scale(1.15);
+  }
+  .sep {
+    flex: none;
+    width: 1px;
+    height: 26px;
+    margin-inline: 4px;
+    background: var(--border);
+    opacity: 0.7;
+  }
   button.active {
-    background: var(--selected);
+    background: var(--selected) !important;
+    color: var(--accent);
   }
 </style>

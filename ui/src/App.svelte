@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -85,7 +85,9 @@
   import SearchBar from "./SearchBar.svelte";
   import PrintDialog from "./PrintDialog.svelte";
   import SettingsDialog from "./SettingsDialog.svelte";
-  import { lang, t, type LangSetting } from "./i18n.svelte";
+  import { lang, t, type Key, type LangSetting } from "./i18n.svelte";
+  import Icon from "./Icon.svelte";
+  import { LOGO_SVG } from "./logo";
   import { applyLook, type Theme } from "./look";
   import { findUpdate, installUpdate, type Update } from "./update";
   import {
@@ -119,31 +121,37 @@
   }
 
   const STAMP_WORDS = ["معتمد", "مسودة", "سري", "APPROVED", "DRAFT", "CONFIDENTIAL", "RECEIVED"];
-  const TOOLS: [Tool, string][] = [
-    ["select", "↖"],
-    ["ink", "✎"],
-    ["line", "╱"],
-    ["arrow", "↗"],
-    ["square", "▭"],
-    ["circle", "◯"],
-    ["note", "🗨"],
-    ["text", "T"],
-    ["stamp", "⎔"],
-    ["image", "🖼"],
-    ["tick", "✓"],
-    ["cross", "✗"],
-    ["snip", "⬚"],
+  // Ribbon commands: tool, icon (icons.ts) and short label (or none).
+  const TOOLS: [Tool, string, Key | null][] = [
+    ["note", "note", "tool.note"],
+    ["text", "textbox", "tool.text"],
+    ["stamp", "stamp", "tool.stamp"],
+    ["image", "picture", "tool.image"],
+    ["tick", "tick", null],
+    ["cross", "cross", null],
+    ["ink", "pen", "tool.ink"],
+    ["line", "line", null],
+    ["arrow", "arrow", null],
+    ["square", "rect", null],
+    ["circle", "ellipse", null],
   ];
   /** Tools that add page content (not annotations). */
-  const ITEM_TOOLS: [Tool, string][] = [
-    ["itext", "Aa"],
-    ["irect", "■"],
-    ["iellipse", "●"],
-    ["iline", "—"],
-    ["iarrow", "➜"],
-    ["iimage", "▣"],
-    ["itable", "▦"],
+  const ITEM_TOOLS: [Tool, string, Key][] = [
+    ["itext", "itext", "tool.text"],
+    ["iimage", "picture", "tool.image"],
+    ["itable", "table", "rib.table"],
+    ["irect", "rect", "tool.square"],
+    ["iellipse", "ellipse", "tool.circle"],
+    ["iline", "line", "tool.line"],
+    ["iarrow", "arrow", "tool.arrow"],
   ];
+  const MODES: [ViewMode, string, Key][] = [
+    ["continuous", "continuous", "bar.continuous"],
+    ["single", "single", "bar.single"],
+    ["two-page", "twoPage", "bar.twoPage"],
+  ];
+  type RibbonTab = "home" | "insert" | "comment" | "view" | "format";
+  const RIBBON_TABS: RibbonTab[] = ["home", "insert", "comment", "view", "format"];
 
   const MARKUP_COLORS: { rgb: number[]; css: string }[] = [
     { rgb: [1, 0.92, 0.23], css: "#ffeb3b" },
@@ -231,6 +239,21 @@
   let newOpen = $state(false);
   // Page items: the chosen ones, installed fonts (read once), the table being edited.
   let selItems: ItemView[] = $state.raw([]);
+  // The ribbon's chosen tab. Choosing page items shows their Format tab;
+  // when nothing is chosen any more, the tab chosen before comes back.
+  let ribbon: RibbonTab = $state("home");
+  const itemTool = $derived(ITEM_TOOLS.some(([id]) => id === tool));
+  let ribbonBefore: RibbonTab = "home";
+  let ribbonSwitched = $state(false);
+  $effect(() => {
+    const chosen = selItems.length > 0;
+    untrack(() => {
+      if (chosen && ribbon !== "format") {
+        ribbonBefore = ribbon;
+        ribbon = "format";
+      } else if (!chosen && ribbon === "format") ribbon = ribbonBefore;
+    });
+  });
   let fonts: [string, boolean][] = $state.raw([]);
   let fontsAsked = false;
   let tableEdit: { page: number; item: ItemView } | null = $state.raw(null);
@@ -1082,6 +1105,22 @@
     if (pwPrompt) void open(pwPrompt.path, password);
   }
 
+  // The status bar's zoom slider runs from 20% to 500%, with 100% in the middle.
+  function greeting() {
+    const h = new Date().getHours();
+    return t(h < 12 ? "rib.morning" : h < 18 ? "rib.afternoon" : "rib.evening");
+  }
+
+  function zoomToSlider(pct: number) {
+    return Math.min(100, Math.max(0, 50 + (50 * Math.log(pct / 100)) / Math.log(5)));
+  }
+  function sliderToZoom(v: number) {
+    return 100 * Math.pow(5, (v - 50) / 50);
+  }
+  function setZoomPct(pct: number) {
+    viewer?.setZoom(pct / 100 / (72 / 96));
+  }
+
   function zoomBy(k: number) {
     viewer?.setZoom(viewer.zoom * k);
   }
@@ -1423,433 +1462,501 @@
 <svelte:window onkeydown={onKey} />
 
 <div class="app">
-  <!-- The window's own title bar: tabs, then space to drag the window, then its buttons. -->
-  <div class="titlebar" data-tauri-drag-region>
-    {#if !tabs.length}<span class="app-name" data-tauri-drag-region>edits</span>{/if}
-    <div class="tabbar" role="tablist" aria-label={t("app.documents")} data-tauri-drag-region>
-      {#each tabs as tab (tab.id)}
-        <div
-          class="tab"
-          class:active={tab.id === activeId}
-          role="tab"
-          tabindex="0"
-          aria-selected={tab.id === activeId}
-          title={tab.path}
-          onclick={() => activate(tab.id)}
-          onkeydown={(e) => e.key === "Enter" && activate(tab.id)}
-          onauxclick={(e) => e.button === 1 && closeTab(tab.id)}
-        >
-          {#if tab.dirty}<span class="dirty" title={t("unsaved.marker")}>●</span>{/if}
-          <span class="tab-name" dir="auto">{tab.name}</span>
+  <header>
+    <!-- The window's own title bar: quick commands, tabs, space to drag the window, its buttons. -->
+    <div class="titlebar" data-tauri-drag-region>
+      <span class="brand" data-tauri-drag-region>
+        <!-- eslint-disable-next-line svelte/no-at-html-tags -- generated by scripts/gen-brand.py -->
+        <span class="logo" aria-hidden="true">{@html LOGO_SVG}</span>
+        {#if !tabs.length}<span class="app-name" data-tauri-drag-region>edits</span>{/if}
+      </span>
+      {#if viewer}
+        <div class="qat" role="toolbar" aria-label={t("rib.quick")}>
           <button
-            class="tab-close"
-            aria-label={t("app.closeTab", { name: tab.name })}
-            title={t("app.closeTabTitle")}
-            onclick={(e) => {
-              e.stopPropagation();
-              closeTab(tab.id);
-            }}
+            onclick={() => saveActive(false)}
+            disabled={!active?.dirty}
+            title={t("save.saveTitle")}
+            aria-label={t("save.save")}
           >
-            ×
+            <Icon name="save" size={18} />
+          </button>
+          <button
+            disabled={!active?.canUndo}
+            onclick={undo}
+            title={t("edit.undoTitle")}
+            aria-label={t("edit.undo")}
+          >
+            <Icon name="undo" size={18} />
+          </button>
+          <button
+            disabled={!active?.canRedo}
+            onclick={redo}
+            title={t("edit.redoTitle")}
+            aria-label={t("edit.redo")}
+          >
+            <Icon name="redo" size={18} />
           </button>
         </div>
-      {/each}
-      {#if tabs.length}
-        <button class="tab-new" onclick={openDialog} title={t("app.openTitle")} aria-label={t("app.openPdf")}>
-          +
-        </button>
       {/if}
-    </div>
-    <span class="drag" data-tauri-drag-region></span>
-    <div class="winctl">
-      <button
-        tabindex="-1"
-        aria-label={t("win.minimize")}
-        title={t("win.minimize")}
-        onclick={() => void appWindow.minimize()}
-      >
-        &#xE921;
-      </button>
-      <button
-        tabindex="-1"
-        aria-label={maximized ? t("win.restore") : t("win.maximize")}
-        title={maximized ? t("win.restore") : t("win.maximize")}
-        onclick={() => void appWindow.toggleMaximize()}
-      >
-        {String.fromCharCode(maximized ? 0xe923 : 0xe922)}
-      </button>
-      <button
-        class="close"
-        tabindex="-1"
-        aria-label={t("win.close")}
-        title={t("win.close")}
-        onclick={() => void appWindow.close()}
-      >
-        &#xE8BB;
-      </button>
-    </div>
-  </div>
-  <header>
-    {#if viewer}
-      <button
-        class:active={sidebarOpen}
-        aria-pressed={sidebarOpen}
-        onclick={toggleSidebar}
-        title={t("bar.panelTitle")}
-      >
-        {t("bar.panel")}
-      </button>
-      <button
-        class:active={active?.organize}
-        aria-pressed={!!active?.organize}
-        onclick={() => setOrganize(!active?.organize, active?.organize ? page : undefined)}
-        title={t("org.openTitle")}
-      >
-        {t("org.open")}
-      </button>
-      <button
-        disabled={!canBack}
-        onclick={() => viewer?.goBack()}
-        title={t("bar.backTitle")}
-        aria-label={t("bar.back")}
-      >
-        {rtlUi ? "→" : "←"}
-      </button>
-      <button
-        disabled={!canForward}
-        onclick={() => viewer?.goForward()}
-        title={t("bar.forwardTitle")}
-        aria-label={t("bar.forward")}
-      >
-        {rtlUi ? "←" : "→"}
-      </button>
-      <span class="sep"></span>
-      <label class="pageno">
-        <span class="visually-hidden">{t("bar.pageNumber")}</span>
-        <input
-          id="page-input"
-          inputmode="numeric"
-          bind:value={pageInput}
-          onfocus={(e) => {
-            editingPage = true;
-            (e.currentTarget as HTMLInputElement).select();
-          }}
-          onblur={() => {
-            editingPage = false;
-            pageInput = String(page + 1);
-          }}
-          onkeydown={(e) => {
-            if (e.key === "Enter") goToTyped();
-            if (e.key === "Escape") (e.currentTarget as HTMLInputElement).blur();
-          }}
-          title={t("bar.goTo")}
-        />
-        <span dir="ltr">/ {viewer.pageCount}</span>
-      </label>
-      <span class="sep"></span>
-      <button onclick={() => zoomBy(0.8)} title={t("bar.zoomOutTitle")} aria-label={t("bar.zoomOut")}>
-        −
-      </button>
-      <span class="zoom" dir="ltr">{zoomPct}%</span>
-      <button onclick={() => zoomBy(1.25)} title={t("bar.zoomInTitle")} aria-label={t("bar.zoomIn")}>
-        +
-      </button>
-      <button
-        class:active={fit === "width"}
-        aria-pressed={fit === "width"}
-        onclick={() => viewer?.fitWidth()}
-        title={t("bar.fitWidthTitle")}
-      >
-        {t("bar.fitWidth")}
-      </button>
-      <button
-        class:active={fit === "page"}
-        aria-pressed={fit === "page"}
-        onclick={() => viewer?.fitPage()}
-        title={t("bar.fitPageTitle")}
-      >
-        {t("bar.fitPage")}
-      </button>
-      <span class="sep"></span>
-      <label>
-        <span class="visually-hidden">{t("bar.view")}</span>
-        <select
-          value={mode}
-          onchange={(e) => viewer?.setMode(e.currentTarget.value as ViewMode)}
-          title={t("bar.layout")}
-        >
-          <option value="continuous">{t("bar.continuous")}</option>
-          <option value="single">{t("bar.single")}</option>
-          <option value="two-page">{t("bar.twoPage")}</option>
-        </select>
-      </label>
-      {#if mode === "two-page"}
-        <button
-          class:active={rtl}
-          aria-pressed={rtl}
-          onclick={() => viewer?.setRtl(!rtl)}
-          title={t("bar.rtlTitle")}
-        >
-          {t("bar.rtl")}
-        </button>
-      {/if}
-      <span class="sep"></span>
-      <button
-        onclick={() => viewer?.rotate(-1)}
-        title={t("bar.rotateLeftTitle")}
-        aria-label={t("bar.rotateLeft")}
-      >
-        ⟲
-      </button>
-      <button
-        onclick={() => viewer?.rotate(1)}
-        title={t("bar.rotateRightTitle")}
-        aria-label={t("bar.rotateRight")}
-      >
-        ⟳
-      </button>
-      <span class="sep"></span>
-      <button onclick={() => (printOpen = true)} title={t("bar.printTitle")}>{t("bar.print")}</button>
-      <button onclick={() => saveActive(false)} disabled={!active?.dirty} title={t("save.saveTitle")}>
-        {t("save.save")}
-      </button>
-      <span class="sep"></span>
-      <button
-        disabled={!active?.canUndo}
-        onclick={undo}
-        title={t("edit.undoTitle")}
-        aria-label={t("edit.undo")}
-      >
-        ↶
-      </button>
-      <button
-        disabled={!active?.canRedo}
-        onclick={redo}
-        title={t("edit.redoTitle")}
-        aria-label={t("edit.redo")}
-      >
-        ↷
-      </button>
-    {:else}
-      <button onclick={openDialog} title={t("app.openTitle")}>{t("app.open")}</button>
-      <span class="name">edits</span>
-    {/if}
-    <span class="grow"></span>
-    <button
-      onclick={() => (settingsOpen = true)}
-      title={t("bar.settingsTitle")}
-      aria-label={t("bar.settings")}
-    >
-      ⚙
-    </button>
-  </header>
-  {#if viewer && !active?.organize}
-    <div class="ctxbar" role="toolbar" aria-label={t("ctx.label")}>
-      {#if !selAnnot || selAnnot.kind !== "other"}
-        <span class="marks" role="group" aria-label={t("mark.color")}>
-          {#each MARKUP_COLORS.concat([{ rgb: [0, 0, 0], css: "#000" }]) as c (c.css)}
-            <button
-              class="swatch"
-              class:active={same(currentColor, c.rgb)}
-              aria-pressed={same(currentColor, c.rgb)}
-              style:background={c.css}
-              aria-label={c.css}
-              title={t("mark.color")}
-              onclick={() => pickColor(c.rgb)}
-            ></button>
-          {/each}
-        </span>
-      {/if}
-      <button
-        disabled={!hasSel}
-        onclick={() => markup("highlight")}
-        title={hasSel ? t("mark.highlight") : t("mark.hint")}
-        aria-label={t("mark.highlight")}
-      >
-        <span
-          class="mk hl"
-          style:background={`rgb(${markupColor.map((c) => Math.round(c * 255)).join(" ")})`}
-        >
-          A
-        </span>
-      </button>
-      <button
-        disabled={!hasSel}
-        onclick={() => markup("underline")}
-        title={hasSel ? t("mark.underline") : t("mark.hint")}
-        aria-label={t("mark.underline")}
-      >
-        <span class="mk ul">A</span>
-      </button>
-      <button
-        disabled={!hasSel}
-        onclick={() => markup("strikeout")}
-        title={hasSel ? t("mark.strikeout") : t("mark.hint")}
-        aria-label={t("mark.strikeout")}
-      >
-        <span class="mk so">A</span>
-      </button>
-      <button
-        disabled={!hasSel}
-        onclick={() => markup("squiggly")}
-        title={hasSel ? t("mark.squiggly") : t("mark.hint")}
-        aria-label={t("mark.squiggly")}
-      >
-        <span class="mk sq">A</span>
-      </button>
-      <span class="sep"></span>
-      <span class="tools" role="group" aria-label={t("tool.group")}>
-        {#each TOOLS as [id, icon] (id)}
-          <button
-            class:active={tool === id}
-            aria-pressed={tool === id}
-            title={t(`tool.${id}` as "tool.select")}
-            aria-label={t(`tool.${id}` as "tool.select")}
-            onclick={() => setTool(id as Tool)}
+      <div class="tabbar" role="tablist" aria-label={t("app.documents")} data-tauri-drag-region>
+        {#each tabs as tab (tab.id)}
+          <div
+            class="tab"
+            class:active={tab.id === activeId}
+            role="tab"
+            tabindex="0"
+            aria-selected={tab.id === activeId}
+            title={tab.path}
+            onclick={() => activate(tab.id)}
+            onkeydown={(e) => e.key === "Enter" && activate(tab.id)}
+            onauxclick={(e) => e.button === 1 && closeTab(tab.id)}
           >
-            {icon}
-          </button>
-        {/each}
-      </span>
-      <span class="menu sign">
-        <button
-          class:active={tool === "sign"}
-          aria-pressed={tool === "sign"}
-          aria-haspopup="menu"
-          aria-expanded={signMenu}
-          title={t("sig.menuTitle")}
-          onclick={() => (signatures.length ? (signMenu = !signMenu) : (signDialog = true))}
-        >
-          ✍ {t("sig.sign")}
-        </button>
-        {#if signMenu}
-          <div class="menu-list" role="menu">
-            {#each signatures as png (png)}
-              <span class="sig-item">
-                <button role="menuitem" class="sig-pick" onclick={() => chooseSignature(png)}>
-                  <img src={png} alt={t("sig.saved")} />
-                </button>
-                <button
-                  class="sig-forget"
-                  aria-label={t("sig.forget")}
-                  title={t("sig.forget")}
-                  onclick={() => forgetSignature(png)}
-                >
-                  ×
-                </button>
-              </span>
-            {/each}
+            <span class="tab-icon" aria-hidden="true">PDF</span>
+            <span class="tab-name" dir="auto">{tab.name}</span>
+            {#if tab.dirty}<span class="dirty" title={t("unsaved.marker")}>●</span>{/if}
             <button
-              role="menuitem"
-              onclick={() => {
-                signMenu = false;
-                signDialog = true;
+              class="tab-close"
+              aria-label={t("app.closeTab", { name: tab.name })}
+              title={t("app.closeTabTitle")}
+              onclick={(e) => {
+                e.stopPropagation();
+                closeTab(tab.id);
               }}
             >
-              {t("sig.new")}
+              <Icon name="close" size={14} />
             </button>
           </div>
-        {/if}
-      </span>
-      <span class="sep"></span>
-      <span class="tools" role="group" aria-label={t("tool.insert")}>
-        {#each ITEM_TOOLS as [id, icon] (id)}
-          <button
-            class:active={tool === id}
-            aria-pressed={tool === id}
-            title={t(`tool.${id}` as "tool.select")}
-            aria-label={t(`tool.${id}` as "tool.select")}
-            onclick={() => setTool(id as Tool)}
-          >
-            {icon}
-          </button>
         {/each}
-      </span>
-      <button onclick={() => (flattenAsk = true)} title={t("flat.title")}>{t("flat.button")}</button>
-      {#if ocrInstalled}
-        <button onclick={() => (ocrOpen = true)} disabled={!!active?.ocr} title={t("ocr.buttonTitle")}>
-          {t("ocr.button")}
-        </button>
-      {/if}
-      {#if active?.ocr}
-        {@const run = active.ocr}
-        {@const tab = active}
-        <span class="ocr-run" role="status">
-          <progress max={run.total} value={run.done}></progress>
-          {t("ocr.running", { done: Math.min(run.done + 1, run.total), total: run.total })}
-          <button onclick={() => stopOcr(tab)}>{t("ocr.stop")}</button>
-        </span>
-      {/if}
-      {#if selItems.length && viewer}
-        <span class="sep"></span>
-        <ItemBar
-          items={selItems}
-          layer={viewer.items}
-          {fonts}
-          onstyle={(st) => (itemText = { ...itemText, ...st })}
-          onedittable={(it) => (tableEdit = { page: viewer?.currentPage() ?? 0, item: it })}
-        />
-      {/if}
-      {#if tool !== "select" || selAnnot}<span class="sep"></span>{/if}
-      {#if selAnnot}
-        <span class="ctx-kind">
-          {t(`kind.${selAnnot.kind}` as "kind.other")}{#if selAnnot.author}<span class="ctx-by" dir="auto">
-              · {selAnnot.author}
-            </span>{/if}
-        </span>
-      {/if}
-      {#if (!selAnnot && tool !== "select") || (selAnnot && ["ink", "line", "square", "circle"].includes(selAnnot.kind))}
-        <label class="ctx-width">
-          {t("ctx.width")}
-          <select
-            value={String(selAnnot ? selAnnot.width : drawWidth)}
-            onchange={(e) => pickWidth(Number(e.currentTarget.value))}
+        {#if tabs.length}
+          <button
+            class="tab-new"
+            onclick={openDialog}
+            title={t("app.openTitle")}
+            aria-label={t("app.openPdf")}
           >
-            {#each [0.5, 1, 2, 3, 5, 8] as w (w)}<option value={String(w)}>{w} pt</option>{/each}
-          </select>
-        </label>
-      {/if}
-      {#if (!selAnnot && (tool === "square" || tool === "circle")) || (selAnnot && (selAnnot.kind === "square" || selAnnot.kind === "circle"))}
+            <Icon name="plus" size={16} />
+          </button>
+        {/if}
+      </div>
+      <span class="drag" data-tauri-drag-region></span>
+      <button
+        class="title-btn"
+        onclick={() => (settingsOpen = true)}
+        title={t("bar.settingsTitle")}
+        aria-label={t("bar.settings")}
+      >
+        <Icon name="settings" size={18} />
+      </button>
+      <div class="winctl">
         <button
-          class:active={selAnnot ? !!selAnnot.fill : drawFill}
-          aria-pressed={selAnnot ? !!selAnnot.fill : drawFill}
-          onclick={toggleFill}
+          tabindex="-1"
+          aria-label={t("win.minimize")}
+          title={t("win.minimize")}
+          onclick={() => void appWindow.minimize()}
         >
-          {t("ctx.fill")}
+          &#xE921;
         </button>
-      {/if}
-      {#if (!selAnnot && (tool === "text" || tool === "stamp")) || (selAnnot && (selAnnot.kind === "freetext" || (selAnnot.kind === "stamp" && selAnnot.label)))}
-        <label class="ctx-width">
-          {t("ctx.size")}
-          <select
-            value={String(selAnnot ? selAnnot.font_size : textSize)}
-            onchange={(e) => pickTextSize(Number(e.currentTarget.value))}
-          >
-            {#each [8, 10, 12, 14, 18, 24, 32, 48] as sz (sz)}<option value={String(sz)}>
-                {sz} pt
-              </option>{/each}
-          </select>
-        </label>
-      {/if}
-      {#if !selAnnot && tool === "stamp"}
-        <label class="ctx-width">
-          {t("ctx.stampWord")}
-          <select bind:value={stampWord}>
-            {#each STAMP_WORDS as w (w)}<option value={w}>{w}</option>{/each}
-          </select>
-        </label>
-      {/if}
-      {#if !selAnnot && (tool === "note" || tool === "text" || tool === "stamp" || tool === "image" || tool === "tick" || tool === "cross" || tool === "sign")}
-        <span class="ctx-hint">{t(`hint.${tool}` as "hint.note")}</span>
-      {/if}
-      {#if selAnnot}
-        <button onclick={() => selAnnot && (noteEdit = { a: selAnnot, text: selAnnot.contents })}>
-          {selAnnot.kind === "freetext" ? t("ctx.text") : t("ctx.note")}
+        <button
+          tabindex="-1"
+          aria-label={maximized ? t("win.restore") : t("win.maximize")}
+          title={maximized ? t("win.restore") : t("win.maximize")}
+          onclick={() => void appWindow.toggleMaximize()}
+        >
+          {String.fromCharCode(maximized ? 0xe923 : 0xe922)}
         </button>
-        <button onclick={deleteSelected} title={t("ctx.deleteTitle")}>{t("ctx.delete")}</button>
-      {/if}
+        <button
+          class="close"
+          tabindex="-1"
+          aria-label={t("win.close")}
+          title={t("win.close")}
+          onclick={() => void appWindow.close()}
+        >
+          &#xE8BB;
+        </button>
+      </div>
     </div>
-  {/if}
+    {#if viewer}
+      <!-- The ribbon: its tabs, then the chosen tab's commands on a card. -->
+      <div class="ribbon">
+        <div class="rtabs" role="tablist" aria-label={t("rib.tabs")}>
+          {#each RIBBON_TABS as id (id)}
+            {#if id !== "format" || selItems.length}
+              <button
+                class="rtab"
+                class:on={ribbon === id}
+                class:contextual={id === "format"}
+                role="tab"
+                aria-selected={ribbon === id}
+                onclick={() => {
+                  ribbonSwitched = true;
+                  ribbon = id;
+                }}
+              >
+                {t(`rib.${id}` as "rib.home")}
+              </button>
+            {/if}
+          {/each}
+        </div>
+        <div class="ctxbar" class:switched={ribbonSwitched} role="toolbar" aria-label={t("ctx.label")}>
+          {#if active?.organize}
+            <button
+              class="big active"
+              aria-pressed="true"
+              onclick={() => setOrganize(false, page)}
+              title={t("org.openTitle")}
+            >
+              <Icon name="pages" />{t("org.open")}
+            </button>
+            <span class="sep"></span>
+            <button class="big" onclick={() => (printOpen = true)} title={t("bar.printTitle")}>
+              <Icon name="print" />{t("bar.print")}
+            </button>
+          {:else}
+            <!-- Home -->
+            <div class="panel" hidden={ribbon !== "home"}>
+              <button class="big" onclick={() => setOrganize(true)} title={t("org.openTitle")}>
+                <Icon name="pages" />{t("org.open")}
+              </button>
+              <button
+                class="big"
+                class:active={sidebarOpen}
+                aria-pressed={sidebarOpen}
+                onclick={toggleSidebar}
+                title={t("bar.panelTitle")}
+              >
+                <Icon name="panel" />{t("bar.panel")}
+              </button>
+              <span class="sep"></span>
+              <button
+                class="big"
+                class:active={tool === "select"}
+                aria-pressed={tool === "select"}
+                title={t("tool.select")}
+                aria-label={t("tool.select")}
+                onclick={() => setTool("select")}
+              >
+                <Icon name="select" /><span class="lbl">{t("rib.select")}</span>
+              </button>
+              <button
+                class="big"
+                class:active={tool === "snip"}
+                aria-pressed={tool === "snip"}
+                title={t("tool.snip")}
+                aria-label={t("tool.snip")}
+                onclick={() => setTool("snip")}
+              >
+                <Icon name="snip" /><span class="lbl">{t("rib.snip")}</span>
+              </button>
+              <button class="big" onclick={() => void openFind()} title={t("rib.findTitle")}>
+                <Icon name="find" />{t("rib.find")}
+              </button>
+              <span class="sep"></span>
+              <span class="marks" role="group" aria-label={t("mark.color")}>
+                {#each MARKUP_COLORS.concat([{ rgb: [0, 0, 0], css: "#000" }]) as c (c.css)}
+                  <button
+                    class="swatch"
+                    class:active={same(currentColor, c.rgb)}
+                    aria-pressed={same(currentColor, c.rgb)}
+                    style:background={c.css}
+                    aria-label={c.css}
+                    title={t("mark.color")}
+                    onclick={() => pickColor(c.rgb)}
+                  ></button>
+                {/each}
+              </span>
+              <button
+                disabled={!hasSel}
+                onclick={() => markup("highlight")}
+                title={hasSel ? t("mark.highlight") : t("mark.hint")}
+                aria-label={t("mark.highlight")}
+              >
+                <span
+                  class="mk hl"
+                  style:background={`rgb(${markupColor.map((c) => Math.round(c * 255)).join(" ")})`}
+                >
+                  A
+                </span>
+              </button>
+              <button
+                disabled={!hasSel}
+                onclick={() => markup("underline")}
+                title={hasSel ? t("mark.underline") : t("mark.hint")}
+                aria-label={t("mark.underline")}
+              >
+                <span class="mk ul">A</span>
+              </button>
+              <button
+                disabled={!hasSel}
+                onclick={() => markup("strikeout")}
+                title={hasSel ? t("mark.strikeout") : t("mark.hint")}
+                aria-label={t("mark.strikeout")}
+              >
+                <span class="mk so">A</span>
+              </button>
+              <button
+                disabled={!hasSel}
+                onclick={() => markup("squiggly")}
+                title={hasSel ? t("mark.squiggly") : t("mark.hint")}
+                aria-label={t("mark.squiggly")}
+              >
+                <span class="mk sq">A</span>
+              </button>
+              <span class="sep"></span>
+              {#if ocrInstalled}
+                <button
+                  class="big"
+                  onclick={() => (ocrOpen = true)}
+                  disabled={!!active?.ocr}
+                  title={t("ocr.buttonTitle")}
+                >
+                  <Icon name="ocr" />{t("ocr.button")}
+                </button>
+              {/if}
+              <button class="big" onclick={() => (printOpen = true)} title={t("bar.printTitle")}>
+                <Icon name="print" />{t("bar.print")}
+              </button>
+              <button
+                class="big"
+                onclick={() => saveActive(false)}
+                disabled={!active?.dirty}
+                title={t("save.saveTitle")}
+              >
+                <Icon name="save" />{t("save.save")}
+              </button>
+            </div>
+            <!-- Comment: annotations -->
+            <div class="panel" hidden={ribbon !== "comment"}>
+              {#each TOOLS as [id, icon, label] (id)}
+                <button
+                  class="big"
+                  class:active={tool === id}
+                  aria-pressed={tool === id}
+                  title={t(`tool.${id}` as "tool.select")}
+                  aria-label={t(`tool.${id}` as "tool.select")}
+                  onclick={() => setTool(id as Tool)}
+                >
+                  <Icon name={icon} />{#if label}<span class="lbl">{t(label)}</span>{/if}
+                </button>
+                {#if id === "cross" || id === "circle"}<span class="sep"></span>{/if}
+              {/each}
+              <span class="menu sign">
+                <button
+                  class="big"
+                  class:active={tool === "sign"}
+                  aria-pressed={tool === "sign"}
+                  aria-haspopup="menu"
+                  aria-expanded={signMenu}
+                  title={t("sig.menuTitle")}
+                  onclick={() => (signatures.length ? (signMenu = !signMenu) : (signDialog = true))}
+                >
+                  <Icon name="sign" />{t("sig.sign")}
+                </button>
+                {#if signMenu}
+                  <div class="menu-list" role="menu">
+                    {#each signatures as png (png)}
+                      <span class="sig-item">
+                        <button role="menuitem" class="sig-pick" onclick={() => chooseSignature(png)}>
+                          <img src={png} alt={t("sig.saved")} />
+                        </button>
+                        <button
+                          class="sig-forget"
+                          aria-label={t("sig.forget")}
+                          title={t("sig.forget")}
+                          onclick={() => forgetSignature(png)}
+                        >
+                          ×
+                        </button>
+                      </span>
+                    {/each}
+                    <button
+                      role="menuitem"
+                      onclick={() => {
+                        signMenu = false;
+                        signDialog = true;
+                      }}
+                    >
+                      {t("sig.new")}
+                    </button>
+                  </div>
+                {/if}
+              </span>
+              <span class="sep"></span>
+              <button class="big" onclick={() => (flattenAsk = true)} title={t("flat.title")}>
+                <Icon name="flatten" />{t("flat.button")}
+              </button>
+            </div>
+            <!-- Insert: page content -->
+            <div class="panel" hidden={ribbon !== "insert"}>
+              {#each ITEM_TOOLS as [id, icon, label] (id)}
+                <button
+                  class="big"
+                  class:active={tool === id}
+                  aria-pressed={tool === id}
+                  title={t(`tool.${id}` as "tool.select")}
+                  aria-label={t(`tool.${id}` as "tool.select")}
+                  onclick={() => setTool(id as Tool)}
+                >
+                  <Icon name={icon} /><span class="lbl">{t(label)}</span>
+                </button>
+                {#if id === "itable"}<span class="sep"></span>{/if}
+              {/each}
+            </div>
+            <!-- View -->
+            <div class="panel" hidden={ribbon !== "view"}>
+              <button
+                class="big"
+                class:active={fit === "width"}
+                aria-pressed={fit === "width"}
+                onclick={() => viewer?.fitWidth()}
+                title={t("bar.fitWidthTitle")}
+              >
+                <Icon name="fitWidth" />{t("bar.fitWidth")}
+              </button>
+              <button
+                class="big"
+                class:active={fit === "page"}
+                aria-pressed={fit === "page"}
+                onclick={() => viewer?.fitPage()}
+                title={t("bar.fitPageTitle")}
+              >
+                <Icon name="fitPage" />{t("bar.fitPage")}
+              </button>
+              <span class="sep"></span>
+              {#each MODES as [m, icon, label] (m)}
+                <button
+                  class="big"
+                  class:active={mode === m}
+                  aria-pressed={mode === m}
+                  onclick={() => viewer?.setMode(m)}
+                  title={t("bar.layout")}
+                >
+                  <Icon name={icon} />{t(label)}
+                </button>
+              {/each}
+              {#if mode === "two-page"}
+                <button
+                  class="big"
+                  class:active={rtl}
+                  aria-pressed={rtl}
+                  onclick={() => viewer?.setRtl(!rtl)}
+                  title={t("bar.rtlTitle")}
+                >
+                  <Icon name="rtl" />{t("bar.rtl")}
+                </button>
+              {/if}
+              <span class="sep"></span>
+              <button
+                class="big"
+                onclick={() => viewer?.rotate(-1)}
+                title={t("bar.rotateLeftTitle")}
+                aria-label={t("bar.rotateLeft")}
+              >
+                <Icon name="rotateLeft" /><span class="lbl">{t("bar.rotateLeft")}</span>
+              </button>
+              <button
+                class="big"
+                onclick={() => viewer?.rotate(1)}
+                title={t("bar.rotateRightTitle")}
+                aria-label={t("bar.rotateRight")}
+              >
+                <Icon name="rotateRight" /><span class="lbl">{t("bar.rotateRight")}</span>
+              </button>
+              <span class="sep"></span>
+              <button
+                disabled={!canBack}
+                onclick={() => viewer?.goBack()}
+                title={t("bar.backTitle")}
+                aria-label={t("bar.back")}
+              >
+                <Icon name={rtlUi ? "forward" : "back"} />
+              </button>
+              <button
+                disabled={!canForward}
+                onclick={() => viewer?.goForward()}
+                title={t("bar.forwardTitle")}
+                aria-label={t("bar.forward")}
+              >
+                <Icon name={rtlUi ? "back" : "forward"} />
+              </button>
+            </div>
+            <!-- Format: the chosen page items -->
+            {#if selItems.length && viewer}
+              <div class="panel" hidden={ribbon !== "format"}>
+                <ItemBar
+                  items={selItems}
+                  layer={viewer.items}
+                  {fonts}
+                  onstyle={(st) => (itemText = { ...itemText, ...st })}
+                  onedittable={(it) => (tableEdit = { page: viewer?.currentPage() ?? 0, item: it })}
+                />
+              </div>
+            {/if}
+            {#if (tool !== "select" && !itemTool) || selAnnot}<span class="sep"></span>{/if}
+            {#if selAnnot}
+              <span class="ctx-kind">
+                {t(`kind.${selAnnot.kind}` as "kind.other")}{#if selAnnot.author}<span
+                    class="ctx-by"
+                    dir="auto"
+                  >
+                    · {selAnnot.author}
+                  </span>{/if}
+              </span>
+            {/if}
+            {#if (!selAnnot && tool !== "select" && tool !== "snip" && !itemTool) || (selAnnot && ["ink", "line", "square", "circle"].includes(selAnnot.kind))}
+              <label class="ctx-width">
+                {t("ctx.width")}
+                <select
+                  value={String(selAnnot ? selAnnot.width : drawWidth)}
+                  onchange={(e) => pickWidth(Number(e.currentTarget.value))}
+                >
+                  {#each [0.5, 1, 2, 3, 5, 8] as w (w)}<option value={String(w)}>{w} pt</option>{/each}
+                </select>
+              </label>
+            {/if}
+            {#if (!selAnnot && (tool === "square" || tool === "circle")) || (selAnnot && (selAnnot.kind === "square" || selAnnot.kind === "circle"))}
+              <button
+                class:active={selAnnot ? !!selAnnot.fill : drawFill}
+                aria-pressed={selAnnot ? !!selAnnot.fill : drawFill}
+                onclick={toggleFill}
+              >
+                {t("ctx.fill")}
+              </button>
+            {/if}
+            {#if (!selAnnot && (tool === "text" || tool === "stamp")) || (selAnnot && (selAnnot.kind === "freetext" || (selAnnot.kind === "stamp" && selAnnot.label)))}
+              <label class="ctx-width">
+                {t("ctx.size")}
+                <select
+                  value={String(selAnnot ? selAnnot.font_size : textSize)}
+                  onchange={(e) => pickTextSize(Number(e.currentTarget.value))}
+                >
+                  {#each [8, 10, 12, 14, 18, 24, 32, 48] as sz (sz)}<option value={String(sz)}>
+                      {sz} pt
+                    </option>{/each}
+                </select>
+              </label>
+            {/if}
+            {#if !selAnnot && tool === "stamp"}
+              <label class="ctx-width">
+                {t("ctx.stampWord")}
+                <select bind:value={stampWord}>
+                  {#each STAMP_WORDS as w (w)}<option value={w}>{w}</option>{/each}
+                </select>
+              </label>
+            {/if}
+            {#if !selAnnot && (tool === "note" || tool === "text" || tool === "stamp" || tool === "image" || tool === "tick" || tool === "cross" || tool === "sign")}
+              <span class="ctx-hint">{t(`hint.${tool}` as "hint.note")}</span>
+            {/if}
+            {#if selAnnot}
+              <button onclick={() => selAnnot && (noteEdit = { a: selAnnot, text: selAnnot.contents })}>
+                {selAnnot.kind === "freetext" ? t("ctx.text") : t("ctx.note")}
+              </button>
+              <button onclick={deleteSelected} title={t("ctx.deleteTitle")}>{t("ctx.delete")}</button>
+            {/if}
+          {/if}
+        </div>
+      </div>
+    {/if}
+  </header>
   {#if update}
     <div class="update" role="status">
       {#if updatePct >= 0}
@@ -2041,19 +2148,34 @@
       {:else if !tabs.length}
         <div class="start">
           <div class="start-inner">
-            <p>
-              <button class="primary" onclick={openDialog}>{t("app.openPdf")}</button>
-              <button onclick={() => (newOpen = true)}>{t("new.open")}</button>
-              <button onclick={() => (mergeFiles_ = [])}>{t("merge.open")}</button>
-              <button onclick={() => (picturesOpen = true)}>{t("pics.open")}</button>
-              <span class="hint">{t("app.openHint")}</span>
-            </p>
+            <h1>{greeting()}</h1>
+            <h2>{t("rib.start")}</h2>
+            <div class="cards">
+              <button class="card primary-card" onclick={openDialog}>
+                <span class="card-art"><Icon name="open" size={34} /></span>
+                {t("app.openPdf")}
+              </button>
+              <button class="card" onclick={() => (newOpen = true)}>
+                <span class="card-art"><Icon name="newDoc" size={34} /></span>
+                {t("new.open")}
+              </button>
+              <button class="card" onclick={() => (mergeFiles_ = [])}>
+                <span class="card-art"><Icon name="merge" size={34} /></span>
+                {t("merge.open")}
+              </button>
+              <button class="card" onclick={() => (picturesOpen = true)}>
+                <span class="card-art"><Icon name="pictures" size={34} /></span>
+                {t("pics.open")}
+              </button>
+            </div>
+            <p class="hint">{t("app.openHint")}</p>
             {#if recent.length}
               <h2>{t("app.recent")}</h2>
               <ul class="recent">
                 {#each recent.slice(0, 12) as r (r.path)}
                   <li>
                     <button class="recent-open" onclick={() => open(r.path)} title={r.path}>
+                      <span class="file-icon" aria-hidden="true">PDF</span>
                       <span class="recent-name" dir="auto">{r.name}</span>
                       <span class="recent-meta">{describeRecent(r)}</span>
                       <span class="recent-path" dir="auto">{r.path}</span>
@@ -2175,6 +2297,88 @@
       {/if}
     </main>
   </div>
+  {#if viewer}
+    <!-- The status bar: page, text recognition, zoom. -->
+    <footer>
+      <label class="pageno">
+        {t("rib.page")}
+        <input
+          id="page-input"
+          inputmode="numeric"
+          aria-label={t("bar.pageNumber")}
+          bind:value={pageInput}
+          onfocus={(e) => {
+            editingPage = true;
+            (e.currentTarget as HTMLInputElement).select();
+          }}
+          onblur={() => {
+            editingPage = false;
+            pageInput = String(page + 1);
+          }}
+          onkeydown={(e) => {
+            if (e.key === "Enter") goToTyped();
+            if (e.key === "Escape") (e.currentTarget as HTMLInputElement).blur();
+          }}
+          title={t("bar.goTo")}
+        />
+        <span>{t("rib.of", { pages: viewer.pageCount })}</span>
+      </label>
+      {#if active?.dirty}<span class="st-dirty">{t("unsaved.marker")}</span>{/if}
+      {#if active?.ocr}
+        {@const run = active.ocr}
+        {@const tab = active}
+        <span class="ocr-run" role="status">
+          <progress max={run.total} value={run.done}></progress>
+          {t("ocr.running", { done: Math.min(run.done + 1, run.total), total: run.total })}
+          <button onclick={() => stopOcr(tab)}>{t("ocr.stop")}</button>
+        </span>
+      {/if}
+      <span class="grow"></span>
+      {#each MODES as [m, icon, label] (m)}
+        <button
+          class="st-btn"
+          class:active={mode === m}
+          aria-pressed={mode === m}
+          onclick={() => viewer?.setMode(m)}
+          title={t(label)}
+          aria-label={t(label)}
+        >
+          <Icon name={icon} size={16} />
+        </button>
+      {/each}
+      <span class="sep"></span>
+      <button
+        class="st-btn"
+        onclick={() => zoomBy(0.8)}
+        title={t("bar.zoomOutTitle")}
+        aria-label={t("bar.zoomOut")}
+      >
+        <Icon name="minus" size={16} />
+      </button>
+      <input
+        class="zoom-slider"
+        type="range"
+        min="0"
+        max="100"
+        step="any"
+        aria-label={t("rib.zoom")}
+        value={zoomToSlider(zoomPct)}
+        oninput={(e) => setZoomPct(sliderToZoom(Number(e.currentTarget.value)))}
+        style:--fill={`${zoomToSlider(zoomPct)}%`}
+      />
+      <button
+        class="st-btn"
+        onclick={() => zoomBy(1.25)}
+        title={t("bar.zoomInTitle")}
+        aria-label={t("bar.zoomIn")}
+      >
+        <Icon name="plus" size={16} />
+      </button>
+      <button class="zoom" dir="ltr" onclick={() => viewer?.fitWidth()} title={t("bar.fitWidthTitle")}>
+        {zoomPct}%
+      </button>
+    </footer>
+  {/if}
 </div>
 
 <style>
@@ -2183,29 +2387,89 @@
     flex-direction: column;
     height: 100%;
   }
-  /* The title bar, tabs and toolbars are one surface: tabs are pills on it. */
-  .titlebar {
-    display: flex;
-    align-items: stretch;
-    height: 40px;
-    background: var(--bar);
+  header {
     flex: none;
     user-select: none;
   }
+  /* Title bar: brand colour in the light theme; the chosen document's tab
+     joins the ribbon below it. */
+  .titlebar {
+    display: flex;
+    align-items: stretch;
+    height: 42px;
+    background: var(--title-bg);
+    color: var(--title-text);
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-inline: 12px 6px;
+  }
+  /* The brand symbol on a small tile (docs/brand.md). */
+  .logo {
+    display: grid;
+    place-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 7px;
+    background: var(--paper);
+    color: var(--brand);
+    box-shadow: 0 1px 2px var(--tab-shadow);
+  }
+  :global(:root[data-theme="dark"]) .logo {
+    background: linear-gradient(135deg, var(--brand-light), var(--brand-dark));
+    color: var(--on-accent);
+  }
   .app-name {
-    align-self: center;
-    padding: 0 14px;
     font-weight: 600;
-    color: var(--muted);
+  }
+  .qat {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding-inline-end: 6px;
+    margin-inline-end: 4px;
+    border-inline-end: 1px solid var(--title-hover);
+    margin-block: 9px;
+  }
+  .qat button,
+  .title-btn,
+  .tab-new {
+    display: grid;
+    place-content: center;
+    height: 30px;
+    min-width: 30px;
+    padding: 0 6px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+  }
+  .title-btn {
+    align-self: center;
+    margin-inline-end: 4px;
+  }
+  .qat button:hover:not(:disabled),
+  .title-btn:hover,
+  .tab-new:hover {
+    background: var(--title-hover);
+  }
+  .qat button:disabled {
+    opacity: 0.45;
   }
   .tabbar {
     display: flex;
-    align-items: center;
-    gap: 4px;
+    align-items: flex-end;
+    gap: 2px;
     min-width: 0;
-    padding: 4px 8px 0;
+    padding: 6px 12px 0;
     overflow-x: auto;
     scrollbar-width: none;
+  }
+  .tab-new {
+    align-self: center;
+    margin-top: 4px;
   }
   .drag {
     flex: 1;
@@ -2221,46 +2485,74 @@
     border: 0;
     border-radius: 0;
     background: transparent;
-    color: var(--text);
+    color: inherit;
     font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets";
     font-size: 10px;
     padding: 0;
   }
   .winctl button:hover {
-    background: var(--control-hover);
+    background: var(--title-hover);
   }
   .winctl button.close:hover {
     background: var(--close-hover);
     color: var(--on-accent);
   }
   .tab {
+    position: relative;
     display: flex;
     align-items: center;
-    gap: 6px;
-    height: 30px;
-    max-width: 220px;
-    min-width: 80px;
-    padding: 0 6px 0 12px;
-    border-radius: 8px;
-    border: 1px solid transparent;
+    gap: 7px;
+    height: 34px;
+    max-width: 230px;
+    min-width: 90px;
+    padding: 0 6px 0 10px;
+    border-radius: 9px 9px 0 0;
     color: var(--tab-text);
     cursor: default;
-    user-select: none;
-    transition: background-color 0.12s;
+    transition:
+      background-color 0.15s,
+      color 0.15s;
   }
   .tab:hover {
     background: var(--tab-hover);
   }
   .tab.active {
     background: var(--tab-active);
-    border-color: var(--tab-border);
     color: var(--text);
     font-weight: 600;
-    box-shadow: 0 1px 3px var(--tab-shadow);
+  }
+  /* Curves where the chosen tab meets the ribbon. */
+  .tab.active::before,
+  .tab.active::after {
+    content: "";
+    position: absolute;
+    bottom: 0;
+    width: 9px;
+    height: 9px;
+    pointer-events: none;
+  }
+  .tab.active::before {
+    left: -9px;
+    background: radial-gradient(circle at 0 0, transparent 9px, var(--tab-active) 9.5px);
+  }
+  .tab.active::after {
+    right: -9px;
+    background: radial-gradient(circle at 100% 0, transparent 9px, var(--tab-active) 9.5px);
   }
   .tab:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: -2px;
+  }
+  .tab-icon,
+  .file-icon {
+    flex: none;
+    padding: 1px 3px;
+    border-radius: 3px;
+    background: var(--pdf-badge);
+    color: var(--on-accent);
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
   }
   .tab-name {
     flex: 1;
@@ -2268,82 +2560,146 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .tab-close,
-  .tab-new {
+  .tab-close {
+    display: grid;
+    place-content: center;
+    width: 22px;
+    height: 22px;
     border: 0;
     background: none;
     color: inherit;
-    padding: 0 4px;
-    border-radius: 4px;
+    padding: 0;
+    border-radius: 5px;
+    opacity: 0.7;
   }
-  .tab-close:hover,
-  .tab-new:hover {
-    background: var(--control-hover);
+  .tab-close:hover {
+    background: var(--control-hover) !important;
+    opacity: 1;
   }
-  .tab-new {
-    height: 28px;
-    padding: 0 10px;
-    font-size: 16px;
+  .tab:not(.active) .tab-close:hover {
+    background: var(--title-hover) !important;
   }
-  header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    height: 40px;
-    padding: 0 12px;
+  /* The ribbon: tab names, then a card of commands. */
+  .ribbon {
     background: var(--bar);
+    padding: 0 8px 8px;
     border-bottom: 1px solid var(--edge);
-    user-select: none;
-    white-space: nowrap;
-    overflow-x: auto;
-    flex: none;
   }
-  /* One line under the whole top area, below the last bar. */
-  header:has(+ .ctxbar) {
-    border-bottom: none;
+  .rtabs {
+    display: flex;
+    gap: 2px;
+    padding: 4px;
   }
-  /* Flat toolbar buttons: no frame until pointed at. */
-  header button:not(.primary),
-  .ctxbar button:not(.primary):not(.swatch),
-  header select,
-  .ctxbar select {
-    border-color: transparent;
+  .rtab {
+    position: relative;
+    padding: 5px 12px 7px;
+    border: 0;
+    border-radius: 6px;
     background: transparent;
-    border-radius: 6px;
+    color: var(--muted);
+    transition:
+      color 0.15s,
+      background-color 0.15s;
   }
-  header button:not(.primary):hover:not(:disabled),
-  .ctxbar button:not(.primary):not(.swatch):hover:not(:disabled),
-  header select:hover,
-  .ctxbar select:hover {
+  .rtab:hover {
     background: var(--control-hover);
+    color: var(--text);
   }
-  header button.active,
-  .ctxbar button.active {
-    background: var(--selected);
-    border-color: transparent;
-  }
-  header input {
-    border-color: transparent;
-    background: var(--field-bg);
-    border-radius: 6px;
-  }
-  .name {
+  .rtab.on {
+    color: var(--accent);
     font-weight: 600;
   }
-  .grow {
-    flex: 1;
+  .rtab::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    bottom: 2px;
+    width: 0;
+    height: 3px;
+    border-radius: 2px;
+    background: currentColor;
+    transform: translateX(-50%);
+    transition: width 0.2s ease;
+  }
+  .rtab.on::after {
+    width: calc(100% - 22px);
+  }
+  .rtab.contextual,
+  .rtab.contextual.on {
+    color: var(--format);
   }
   .ctxbar {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 4px 8px;
-    min-height: 34px;
-    padding: 3px 12px;
-    background: var(--bar);
-    border-bottom: 1px solid var(--edge);
-    flex: none;
+    gap: 4px 6px;
+    min-height: 48px;
+    padding: 4px 10px;
+    background: var(--ribbon);
+    border-radius: 10px;
+    /* The shadow stays inside the ribbon's padding: one reaching over the
+       page view makes scrolling repaint it. */
+    box-shadow:
+      0 1px 2px var(--ribbon-shadow),
+      0 1px 5px var(--ribbon-shadow);
     white-space: nowrap;
+  }
+  .panel {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+  }
+  /* Only when the reader changes tab: an animation as a document opens
+     delays its first pages. */
+  .ctxbar.switched .panel {
+    animation: panel-in 0.18s ease;
+  }
+  .panel[hidden] {
+    display: none;
+  }
+  @keyframes panel-in {
+    from {
+      opacity: 0;
+      transform: translateY(-3px);
+    }
+  }
+  /* Flat ribbon buttons: no frame until pointed at. */
+  .ctxbar button:not(.primary):not(.swatch),
+  header select,
+  footer button {
+    border-color: transparent;
+    background: transparent;
+    border-radius: 6px;
+  }
+  .ctxbar button:not(.primary):not(.swatch) {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 36px;
+    transition:
+      background-color 0.12s,
+      transform 0.08s;
+  }
+  .ctxbar button:not(.primary):not(.swatch):hover:not(:disabled),
+  header select:hover,
+  footer button:hover:not(:disabled) {
+    background: var(--control-hover);
+  }
+  .ctxbar button:not(.swatch):active:not(:disabled) {
+    transform: scale(0.96);
+  }
+  .ctxbar button.active,
+  footer button.active {
+    background: var(--selected) !important;
+    color: var(--accent);
+    border-color: transparent;
+  }
+  .ctxbar button.big {
+    padding: 4px 10px;
+  }
+  .grow {
+    flex: 1;
   }
   .ctx-hint {
     color: var(--muted);
@@ -2365,21 +2721,18 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    color: var(--muted);
+    margin-inline-start: 8px;
   }
   .ocr-run progress {
-    width: 80px;
-  }
-  .tools {
-    display: flex;
-    gap: 2px;
+    width: 90px;
+    accent-color: var(--accent);
   }
   textarea {
     width: min(420px, 80vw);
     background: var(--control);
     color: var(--text);
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: 6px;
     padding: 6px 8px;
     font: inherit;
     resize: vertical;
@@ -2388,57 +2741,118 @@
     color: var(--accent);
     font-size: 10px;
   }
+  .tab:not(.active) .dirty {
+    color: inherit;
+  }
   .marks {
     display: flex;
-    gap: 3px;
+    gap: 4px;
+    padding-inline: 4px;
   }
   .swatch {
-    width: 16px;
-    height: 16px;
+    width: 18px;
+    height: 18px;
     padding: 0;
     border-radius: 50%;
-    border: 1px solid var(--border);
+    border: 2px solid var(--ribbon);
+    box-shadow: 0 0 0 1px var(--border);
+    transition: transform 0.12s;
+  }
+  .swatch:hover {
+    transform: scale(1.15);
   }
   .swatch.active {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
+    box-shadow: 0 0 0 2px var(--accent);
   }
   .mk {
     display: inline-block;
-    min-width: 14px;
-    padding: 0 2px;
-    line-height: 16px;
+    min-width: 16px;
+    padding: 0 3px;
+    line-height: 18px;
+    font-size: 14px;
     font-weight: 600;
   }
   .mk.hl {
     color: #000;
-    border-radius: 2px;
+    border-radius: 3px;
   }
   .mk.ul {
     text-decoration: underline;
     text-decoration-thickness: 2px;
+    text-decoration-color: var(--hue-blue);
   }
   .mk.so {
     text-decoration: line-through;
     text-decoration-thickness: 2px;
+    text-decoration-color: var(--hue-red);
   }
   .mk.sq {
     text-decoration: underline wavy;
+    text-decoration-color: var(--hue-green);
   }
   .update {
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 6px 12px;
+    margin: 8px 8px 0;
+    padding: 6px 8px 6px 14px;
     background: var(--note-bg);
-    border-bottom: 1px solid var(--note-border);
+    border: 1px solid var(--note-border);
+    border-radius: 10px;
     flex: none;
+  }
+  .update button:not(.primary) {
+    border-color: transparent;
+    background: transparent;
+    border-radius: 6px;
+  }
+  .update + .update {
+    margin-top: 6px;
+  }
+  .update + .body,
+  .update ~ .body {
+    margin-top: 8px;
   }
   .sep {
     flex: none;
     width: 1px;
-    height: 18px;
+    height: 26px;
+    margin-inline: 4px;
     background: var(--border);
+    opacity: 0.7;
+  }
+  /* Status bar. */
+  footer {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    height: 30px;
+    padding: 0 10px;
+    flex: none;
+    background: var(--bar);
+    border-top: 1px solid var(--edge);
+    color: var(--muted);
+    font-size: 12px;
+    user-select: none;
+    white-space: nowrap;
+  }
+  footer .sep {
+    height: 16px;
+  }
+  .st-btn {
+    display: grid;
+    place-content: center;
+    width: 26px;
+    height: 24px;
+    padding: 0 !important;
+    color: inherit;
+  }
+  .st-dirty {
+    margin-inline-start: 8px;
+    padding: 1px 8px;
+    border-radius: 10px;
+    background: var(--accent-soft);
+    color: var(--accent);
   }
   .pageno {
     display: flex;
@@ -2448,11 +2862,46 @@
   }
   .pageno input {
     width: 5ch;
+    height: 22px;
+    padding: 0 4px;
     text-align: center;
+    border-color: transparent;
+    background: var(--field-bg);
+    border-radius: 5px;
+    font-size: 12px;
+  }
+  .zoom-slider {
+    appearance: none;
+    width: 110px;
+    height: 4px;
+    margin: 0 4px;
+    padding: 0;
+    border: 0;
+    border-radius: 2px;
+    background: linear-gradient(to right, var(--accent) var(--fill), var(--border) var(--fill));
+    cursor: pointer;
+  }
+  :global(html[dir="rtl"]) .zoom-slider {
+    background: linear-gradient(to left, var(--accent) var(--fill), var(--border) var(--fill));
+  }
+  .zoom-slider::-webkit-slider-thumb {
+    appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--ribbon);
+    border: 2px solid var(--accent);
+    transition: transform 0.1s;
+  }
+  .zoom-slider:hover::-webkit-slider-thumb {
+    transform: scale(1.2);
   }
   .zoom {
-    min-width: 4ch;
+    min-width: 6ch;
+    padding: 2px 6px !important;
     text-align: center;
+    font-size: 12px;
+    color: inherit;
     font-variant-numeric: tabular-nums;
   }
   button,
@@ -2461,7 +2910,7 @@
     background: var(--control);
     color: var(--text);
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: 6px;
     padding: 3px 8px;
     font: inherit;
   }
@@ -2599,11 +3048,58 @@
     position: absolute;
     inset: 0;
     overflow: auto;
+    background: radial-gradient(1200px 400px at 10% -10%, var(--accent-soft), transparent 70%), var(--bg);
   }
   .start-inner {
-    max-width: 640px;
-    margin: 48px auto;
-    padding: 0 16px;
+    max-width: 860px;
+    margin: 44px auto;
+    padding: 0 24px;
+    animation: panel-in 0.25s ease;
+  }
+  h1 {
+    margin: 0 0 24px;
+    font-size: 28px;
+    font-weight: 600;
+  }
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+    gap: 14px;
+  }
+  .card {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    padding: 10px 10px 12px;
+    border: 1px solid var(--edge);
+    border-radius: 12px;
+    background: var(--ribbon);
+    text-align: start;
+    font-weight: 600;
+    box-shadow: 0 1px 3px var(--ribbon-shadow);
+    transition:
+      transform 0.15s,
+      box-shadow 0.15s,
+      border-color 0.15s;
+  }
+  .card:hover {
+    background: var(--ribbon) !important;
+    transform: translateY(-2px);
+    border-color: var(--accent);
+    box-shadow: 0 6px 18px var(--ribbon-shadow);
+  }
+  .card-art {
+    display: grid;
+    place-content: center;
+    height: 92px;
+    border-radius: 8px;
+    background: var(--bar);
+  }
+  .primary-card .card-art {
+    background: linear-gradient(135deg, var(--brand-light), var(--brand-dark));
+    color: var(--on-accent);
+    --hue-yellow: var(--on-accent);
   }
   .primary {
     background: var(--accent);
@@ -2615,45 +3111,69 @@
     background: var(--primary-hover) !important;
   }
   .hint {
-    margin-inline-start: 10px;
+    margin: 14px 0 0;
     color: var(--muted);
   }
   h2 {
-    margin: 32px 0 8px;
-    font-size: 13px;
+    margin: 32px 0 10px;
+    font-size: 15px;
     font-weight: 600;
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    color: var(--text);
   }
   .recent {
     list-style: none;
     margin: 0;
-    padding: 0;
+    padding: 4px;
+    border: 1px solid var(--edge);
+    border-radius: 12px;
+    background: var(--ribbon);
   }
   .recent li {
     display: flex;
     align-items: stretch;
-    border-radius: 6px;
+    border-radius: 8px;
+    transition: background-color 0.12s;
   }
   .recent li:hover {
-    background: var(--control);
+    background: var(--control-hover);
   }
   .recent-open {
     flex: 1;
     min-width: 0;
     display: grid;
-    gap: 2px;
+    grid-template-columns: auto 1fr auto;
+    grid-template-areas:
+      "icon name meta"
+      "icon path path";
+    align-items: center;
+    column-gap: 12px;
+    row-gap: 2px;
     padding: 8px 10px;
     background: none;
     border: 0;
     text-align: start;
   }
+  .recent-open .file-icon {
+    grid-area: icon;
+    padding: 5px 4px;
+    font-size: 9px;
+    border-radius: 4px;
+  }
   .recent-open:hover {
     background: none !important;
   }
   .recent-name {
+    grid-area: name;
     font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .recent-meta {
+    grid-area: meta;
+  }
+  .recent-path {
+    grid-area: path;
   }
   .recent-meta,
   .recent-path {
@@ -2672,13 +3192,5 @@
   .recent li:hover .recent-forget,
   .recent-forget:focus-visible {
     visibility: visible;
-  }
-  .visually-hidden {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
   }
 </style>

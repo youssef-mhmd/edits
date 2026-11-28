@@ -1,6 +1,6 @@
 [
   {
-    "select": ["header select", "single"],
+    "eval": "[...document.querySelectorAll('footer button')].find(b => b.getAttribute('aria-label') === 'Single page').click()",
     "wait": 600,
     "log": "[__viewer.currentPage(), document.querySelector('#page-input').value, document.activeElement.tagName]"
   },
@@ -17,7 +17,7 @@
     "log": "[__viewer.currentPage(), document.querySelector('#page-input').value]"
   },
   {
-    "select": ["header select", "continuous"],
+    "eval": "[...document.querySelectorAll('footer button')].find(b => b.getAttribute('aria-label') === 'Continuous').click()",
     "wait": 600,
     "log": "[__viewer.currentPage(), __viewer.scroller.scrollTop, document.querySelector('#page-input').value]"
   },
