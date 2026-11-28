@@ -11,6 +11,8 @@
   WriteRegStr SHCTX "Software\edits\Capabilities" "ApplicationDescription" "Fast PDF reader and editor"
   WriteRegStr SHCTX "Software\edits\Capabilities\FileAssociations" ".pdf" "edits.pdf"
   WriteRegStr SHCTX "Software\RegisteredApplications" "edits" "Software\edits\Capabilities"
+  ; PDF files opened by edits show the PDF file icon, not the app's icon.
+  WriteRegStr SHCTX "Software\Classes\edits.pdf\DefaultIcon" "" "$INSTDIR\pdf.ico,0"
   ; Tell Explorer the associations changed.
   System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 !macroend
