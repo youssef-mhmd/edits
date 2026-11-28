@@ -7,7 +7,17 @@ Their licence texts are in the licenses/pdfium folder next to edits.exe.
 IBM Plex Sans Arabic (https://github.com/IBM/plex): SIL Open Font License 1.1,
 copyright 2017 IBM Corp. Licence text: licenses/OFL-IBM-Plex.txt.
 
-Rust crates (349):
+Text recognition models (detector-v2.onnx, recognizer-v6b-int8.onnx) from arabic-ocr
+(https://github.com/youssef-mhmd/arabic-ocr), Creative Commons Attribution-ShareAlike 4.0
+(https://creativecommons.org/licenses/by-sa/4.0/). Trained on text from Arabic, Persian and
+Urdu Wikipedia and Wikisource by their contributors (CC BY-SA 4.0), scans of public-domain
+books from Wikimedia Commons, and the Tanzil Quran text (Tanzil Project, CC BY 3.0,
+https://tanzil.net). Details: licenses/ocr-models.txt.
+
+ONNX Runtime 1.31.1 (https://onnxruntime.ai): MIT, copyright Microsoft Corporation.
+Licence and notices: licenses/onnxruntime.txt, licenses/onnxruntime-ThirdPartyNotices.txt.
+
+Rust crates (358):
   adler2 2.0.1  0BSD OR MIT OR Apache-2.0
   aes 0.9.2  MIT OR Apache-2.0
   aho-corasick 1.1.5  Unlicense OR MIT
@@ -74,6 +84,7 @@ Rust crates (349):
   dunce 1.0.5  CC0-1.0 OR MIT-0 OR Apache-2.0
   dyn-clone 1.0.20  MIT OR Apache-2.0
   edits-edit 0.4.0  Apache-2.0
+  edits-ocr 0.4.0  Apache-2.0
   edits-text 0.4.0  Apache-2.0
   either 1.19.0  MIT OR Apache-2.0
   equivalent 1.0.3  Apache-2.0 OR MIT
@@ -143,11 +154,13 @@ Rust crates (349):
   kurbo 0.13.1  Apache-2.0 OR MIT
   libc 0.2.191  MIT OR Apache-2.0
   libloading 0.8.9  ISC
+  libloading 0.9.1  ISC
   libm 0.2.16  MIT
   litemap 0.8.3  Unicode-3.0
   lock_api 0.4.14  MIT OR Apache-2.0
   log 0.4.35  MIT OR Apache-2.0
   markup5ever 0.38.0  MIT OR Apache-2.0
+  matrixmultiply 0.3.11  MIT/Apache-2.0
   maybe-owned 0.3.4  MIT OR Apache-2.0
   md-5 0.11.0  MIT OR Apache-2.0
   memchr 2.8.3  Unlicense OR MIT
@@ -157,13 +170,18 @@ Rust crates (349):
   miniz_oxide 0.9.1  MIT OR Zlib OR Apache-2.0
   mio 1.2.5  MIT
   muda 0.19.3  Apache-2.0 OR MIT
+  ndarray 0.17.2  MIT OR Apache-2.0
   new_debug_unreachable 1.0.6  MIT
   ntapi 0.4.3  Apache-2.0 OR MIT
+  num-complex 0.4.6  MIT OR Apache-2.0
   num-conv 0.2.2  MIT OR Apache-2.0
+  num-integer 0.1.47  MIT OR Apache-2.0
   num-traits 0.2.19  MIT OR Apache-2.0
   once_cell 1.21.4  MIT OR Apache-2.0
   open 5.4.5  MIT
   option-ext 0.2.0  MPL-2.0
+  ort 2.0.0-rc.13  MIT OR Apache-2.0
+  ort-sys 2.0.0-rc.13  MIT OR Apache-2.0
   parking_lot 0.12.5  MIT OR Apache-2.0
   parking_lot_core 0.9.12  MIT OR Apache-2.0
   pdfium-render 0.9.6  MIT OR Apache-2.0
@@ -185,6 +203,7 @@ Rust crates (349):
   quote 1.0.47  MIT OR Apache-2.0
   rand_core 0.10.1  MIT OR Apache-2.0
   raw-window-handle 0.6.2  MIT OR Apache-2.0 OR Zlib
+  rawpointer 0.2.1  MIT/Apache-2.0
   read-fonts 0.39.2  MIT OR Apache-2.0
   ref-cast 1.0.27  MIT OR Apache-2.0
   ref-cast-impl 1.0.27  MIT OR Apache-2.0

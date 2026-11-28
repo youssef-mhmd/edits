@@ -1,7 +1,7 @@
 // Recent files and where the reader left each one, saved in the app's data
 // folder through the Rust side (state.json).
 
-import { loadState, saveState, type SearchOptions } from "./api";
+import { loadState, saveState, type OcrOptions, type SearchOptions } from "./api";
 import type { LangSetting } from "./i18n.svelte";
 import type { Theme } from "./look";
 import type { ViewState } from "./viewer";
@@ -26,6 +26,9 @@ export interface Settings {
   author: string;
   /** Markup colour, red, green, blue from 0 to 1. */
   markupColor: number[];
+  /** Text recognition: options, and whether pages that have text are left alone. */
+  ocr: OcrOptions;
+  ocrSkipText: boolean;
 }
 
 interface Saved {
@@ -50,6 +53,8 @@ let saved: Saved = {
     printDpi: 150,
     author: "",
     markupColor: [1, 0.92, 0.23],
+    ocr: { diacritics: true, digits: "keep" },
+    ocrSkipText: true,
   },
 };
 let timer = 0;

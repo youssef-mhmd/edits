@@ -121,11 +121,14 @@ fn clusters(glyphs: &[Glyph]) -> Vec<Cluster> {
             .filter(|(_, c)| !c.space && (c.baseline - g.baseline).abs() <= c.size.max(g.size))
             .map(|(k, c)| {
                 let d = (c.rect[0] - mid).max(mid - c.rect[2]).max(0.0);
-                (k, d, (c.rect[0] - r[2]).abs())
+                // Lines close together: a letter of the next line can be as
+                // near; one on the mark's own line comes first.
+                let other_line = !same_line(c.baseline, c.size, g.baseline, g.size);
+                (k, d, other_line, (c.rect[0] - r[2]).abs())
             })
-            .filter(|&(k, d, _)| d <= out[k].size)
-            .min_by(|a, b| a.1.total_cmp(&b.1).then(a.2.total_cmp(&b.2)))
-            .map(|(k, _, _)| k);
+            .filter(|&(k, d, _, _)| d <= out[k].size)
+            .min_by(|a, b| a.1.total_cmp(&b.1).then(a.2.cmp(&b.2)).then(a.3.total_cmp(&b.3)))
+            .map(|(k, _, _, _)| k);
         match best {
             Some(k) => out[k].glyphs.push(i),
             None => out.push(Cluster { glyphs: vec![i], rect: r, baseline: g.baseline, size: g.size, space: false }),

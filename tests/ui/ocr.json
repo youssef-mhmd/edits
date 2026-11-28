@@ -1,0 +1,17 @@
+[
+  {
+    "eval": "window.__pp = (page, fx, fy) => { const v = __viewer; const box = v.boxes.get(page); const r = v.scroller.getBoundingClientRect(); return [r.left + box.x + fx * box.pw / v.dpr - v.scroller.scrollLeft, r.top + box.y + fy * box.ph / v.dpr - v.scroller.scrollTop]; }; window.__btn = (label) => [...document.querySelectorAll('header button, .ctxbar button, .update button')].find(b => b.getAttribute('aria-label') === label || b.title === label || b.textContent.trim() === label); window.__text = (p) => __viewer.loadText(p).then(t => t.text.trim()); __viewer.setZoom(1); __viewer.goToPage(0);",
+    "wait": 1500,
+    "log": "document.querySelector('.update')?.textContent.trim() ?? 'no offer'",
+    "shot": "ocr-1-offer"
+  },
+  { "eval": "__btn('Recognise text').click()", "wait": 300, "log": "document.querySelector('.dlg h1')?.textContent" , "shot": "ocr-2-dialog" },
+  { "eval": "document.querySelector('.dlg .primary').click()", "wait": 1200, "log": "document.querySelector('.ocr-run')?.textContent.trim() ?? 'not running'", "shot": "ocr-3-running" },
+  { "eval": "__viewer.scrollBy ? 0 : 0", "wait": 6000, "log": "[document.querySelector('.ocr-run')?.textContent.trim() ?? 'done', document.querySelector('.toast')?.textContent.trim() ?? 'no toast', !!document.querySelector('.tab .dirty')]" },
+  { "eval": "0", "wait": 100, "log": "__text(0).then(t => [t.length, t.slice(0, 120)])" },
+  { "eval": "0", "wait": 100, "log": "__text(1).then(t => [t.length, t.slice(0, 120)])", "shot": "ocr-4-done" },
+  { "eval": "__btn('Copy text from an area (draw a box)').click()", "wait": 200, "log": "__viewer.tool" },
+  { "drag": "[...__pp(0, 0.08, 0.08), ...__pp(0, 0.92, 0.2)]", "wait": 4000, "log": "document.querySelector('.toast')?.textContent.trim() ?? 'no toast'", "shot": "ocr-5-snip" },
+  { "eval": "__btn('Select and move (V)')?.click(); __viewer.tool = 'select'", "wait": 100 },
+  { "key": "z", "code": "KeyZ", "ctrl": true, "vk": 90, "wait": 2500, "log": "__text(0).then(t => [t.length, !!document.querySelector('.tab .dirty')])" }
+]

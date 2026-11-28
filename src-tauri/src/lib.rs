@@ -8,6 +8,7 @@ mod bench;
 mod edit;
 mod forms;
 mod nav;
+mod ocr;
 mod pages;
 #[cfg(windows)]
 mod shm;
@@ -125,7 +126,13 @@ async fn open_doc(
 }
 
 #[tauri::command]
-fn close_doc(state: tauri::State<'_, AppState>, edits: tauri::State<'_, edit::EditState>, doc: DocId) {
+fn close_doc(
+    state: tauri::State<'_, AppState>,
+    edits: tauri::State<'_, edit::EditState>,
+    ocr: tauri::State<'_, ocr::OcrState>,
+    doc: DocId,
+) {
+    ocr.cancel(doc);
     edits.closed(doc);
     state.engine.close(doc);
 }
@@ -213,6 +220,7 @@ pub fn run() {
         })
         .manage(Arc::new(text::Searches::default()))
         .manage(edit::EditState::default())
+        .manage(ocr::OcrState::default())
         .manage(AppState { engine, args, initial, main_unix_ms, setup_unix_ms: setup_ms.clone() })
         .invoke_handler(tauri::generate_handler![
             startup,
@@ -259,12 +267,18 @@ pub fn run() {
             pages::pages_export,
             pages::pages_split,
             pages::merge_files,
+            pages::images_to_pdf,
             forms::form_fields,
             forms::field_set,
             edit::flatten_doc,
             state::load_signatures,
             state::save_signatures,
             state::picture_data_url,
+            ocr::ocr_available,
+            ocr::ocr_start,
+            ocr::ocr_first,
+            ocr::ocr_cancel,
+            ocr::ocr_region,
         ])
         .setup(move |app| {
             *setup_ms_hook.lock().unwrap_or_else(|e| e.into_inner()) = unix_ms();

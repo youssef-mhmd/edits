@@ -340,6 +340,9 @@ export const pagesSplit = (doc: number, parts: { pages: number[]; name: string }
   invoke<string[]>("pages_split", { doc, parts, folder });
 export const mergeFiles = (paths: string[], target: string) =>
   invoke<string>("merge_files", { paths, target });
+/** A new PDF of pictures, one per page; `size` in points, or null for pages the shape of each picture. */
+export const imagesToPdf = (paths: string[], target: string, size: number[] | null) =>
+  invoke<string>("images_to_pdf", { paths, target, size });
 
 export type AnnotKind =
   | "highlight"
@@ -416,3 +419,38 @@ export const annotResize = (doc: number, id: number, rect: number[]) =>
   invoke<Changed>("annot_resize", { doc, id, rect });
 export const annotStyle = (doc: number, id: number, style: AnnotStyle) =>
   invoke<Changed>("annot_style", { doc, id, style });
+
+export interface OcrOptions {
+  /** Keep diacritics (tashkeel). */
+  diacritics: boolean;
+  /** "keep" as printed, "western" 0-9, "arabic" Arabic-Indic. */
+  digits: "keep" | "western" | "arabic";
+}
+
+/** Progress of a text recognition run (`ocr-progress` events). */
+export interface OcrProgress {
+  doc: number;
+  run: number;
+  done: number;
+  /** Pages left alone because they already had text. */
+  skipped: number;
+  total: number;
+  /** Pages whose text was just added. */
+  pages: number[];
+  status: EditStatus | null;
+  finished: boolean;
+  error: string | null;
+}
+
+export const ocrAvailable = () => invoke<boolean>("ocr_available");
+export const ocrStart = (
+  doc: number,
+  pages: number[],
+  first: number[],
+  options: OcrOptions,
+  skipText: boolean,
+) => invoke<number>("ocr_start", { doc, pages, first, options, skipText });
+export const ocrFirst = (doc: number, pages: number[]) => invoke<void>("ocr_first", { doc, pages });
+export const ocrCancel = (doc: number) => invoke<void>("ocr_cancel", { doc });
+export const ocrRegion = (doc: number, page: number, rect: number[], options: OcrOptions) =>
+  invoke<string>("ocr_region", { doc, page, rect, options });

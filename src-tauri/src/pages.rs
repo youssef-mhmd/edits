@@ -263,6 +263,25 @@ pub async fn merge_files(paths: Vec<String>, target: String) -> Result<String, S
     .map_err(err)?
 }
 
+/// Writes a new PDF at `target` with one page per picture, in order.
+/// `size`: page width and height in points (turned to suit each picture),
+/// or null for pages the shape of each picture.
+#[tauri::command]
+pub async fn images_to_pdf(paths: Vec<String>, target: String, size: Option<[f32; 2]>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut images = Vec::new();
+        for p in &paths {
+            let bytes = std::fs::read(p).map_err(|e| format!("cannot read {p}: {e}"))?;
+            images.push(edits_edit::image::PdfImage::from_bytes(&bytes).map_err(|e| format!("{p}: {e}"))?);
+        }
+        edits_edit::images_to_pdf(images, size.map(|s| (s[0], s[1])), Path::new(&target))
+            .map_err(|e| export_error(&target, e))?;
+        Ok(target)
+    })
+    .await
+    .map_err(err)?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/edits-core", "crates/edits-edit", "crates/edits-text", "crates/edits-bench", "src-tauri"]
+members = ["crates/edits-core", "crates/edits-edit", "crates/edits-text", "crates/edits-ocr", "crates/edits-bench", "src-tauri"]
 
 [workspace.package]
 version = "0.4.0"
@@ -12,6 +12,7 @@ rust-version = "1.88"
 edits-core = { path = "crates/edits-core" }
 edits-edit = { path = "crates/edits-edit" }
 edits-text = { path = "crates/edits-text" }
+edits-ocr = { path = "crates/edits-ocr" }
 pdfium-render = { version = "0.9.6", default-features = false, features = ["pdfium_8125", "thread_safe"] }
 lopdf = { version = "0.47", default-features = false }
 thiserror = "2"

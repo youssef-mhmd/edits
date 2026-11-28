@@ -639,3 +639,36 @@ pub async fn flatten_doc(app: tauri::AppHandle, doc: DocId) -> Result<Changed, S
 pub fn user_name() -> String {
     std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_default()
 }
+
+/// Gives pages the text recognised on them (one undo step per OCR run) and
+/// shows it, if the page list is still `keys`. Returns the new undo state.
+pub(crate) fn commit_ocr(
+    app: &tauri::AppHandle,
+    doc: DocId,
+    keys: &[u32],
+    run: u64,
+    layers: Vec<(u32, edits_edit::OcrLayer)>,
+) -> Result<Status, String> {
+    use tauri::Manager;
+    let state = app.state::<crate::AppState>();
+    let edit = app.state::<EditState>();
+    let mut all = edit.lock();
+    let s = all.get_mut(&doc).ok_or("the document was closed")?.as_mut().map_err(|e| e.clone())?;
+    if s.page_keys() != keys {
+        return Err("the pages changed while their text was being read".into());
+    }
+    let pages: Vec<u32> = layers.iter().map(|l| l.0).collect();
+    s.set_page_text(run, layers).map_err(|e| e.to_string())?;
+    state.engine.set_overlay_text(doc, s.tail(), pages).map_err(|e| e.to_string())?;
+    persist(s);
+    Ok(s.status())
+}
+
+/// The page keys of a document now, and whether it can be changed.
+pub(crate) fn page_keys(app: &tauri::AppHandle, doc: DocId) -> Result<Vec<u32>, String> {
+    use tauri::Manager;
+    let edit = app.state::<EditState>();
+    let all = edit.lock();
+    let s = all.get(&doc).ok_or("the document was closed")?.as_ref().map_err(|e| e.clone())?;
+    Ok(s.page_keys())
+}

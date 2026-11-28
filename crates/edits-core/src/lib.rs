@@ -18,8 +18,8 @@ mod text;
 pub mod worker;
 
 pub use engine::{
-    DEFAULT_MEMORY_LIMIT_MB, DocId, DocInfo, Engine, EngineError, HEAVY_RENDER_US, PageHits, PageSize, RenderSpec,
-    Ticket, Tile, default_worker_count,
+    DEFAULT_MEMORY_LIMIT_MB, DocId, DocInfo, Engine, EngineError, HEAVY_RENDER_US, MAX_TILE_SIDE, PageHits, PageSize,
+    RenderSpec, Ticket, Tile, default_worker_count,
 };
 pub use library::{PDFIUM_DIR_ENV, find_pdfium_dir};
 pub use nav::{Link, OutlineItem, Target};

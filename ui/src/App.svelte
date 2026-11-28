@@ -20,6 +20,7 @@
     recoveryRestore,
     recoveryDiscard,
     mergeFiles,
+    imagesToPdf,
     pagesCrop,
     pagesDecorate,
     pagesDelete,
@@ -35,6 +36,13 @@
     formFields,
     fieldSet,
     flattenDoc,
+    ocrAvailable,
+    ocrCancel,
+    ocrFirst,
+    ocrRegion,
+    ocrStart,
+    type OcrOptions,
+    type OcrProgress,
     loadSignatures,
     saveSignatures,
     type Changed,
@@ -61,6 +69,8 @@
   import SplitDialog, { type Part } from "./SplitDialog.svelte";
   import MergeDialog from "./MergeDialog.svelte";
   import HeaderDialog from "./HeaderDialog.svelte";
+  import OcrDialog from "./OcrDialog.svelte";
+  import PicturesDialog from "./PicturesDialog.svelte";
   import SignatureDialog from "./SignatureDialog.svelte";
   import Dialog from "./Dialog.svelte";
   import SearchBar from "./SearchBar.svelte";
@@ -93,6 +103,10 @@
     canRedo: boolean;
     /** Showing the page grid (organise pages) instead of the document. */
     organize: boolean;
+    /** Text being recognised: the run and how far it is. */
+    ocr: { run: number; done: number; total: number } | null;
+    /** The offer to recognise text on a page without any was shown or answered. */
+    ocrOffered: boolean;
   }
 
   const STAMP_WORDS = ["معتمد", "مسودة", "سري", "APPROVED", "DRAFT", "CONFIDENTIAL", "RECEIVED"];
@@ -109,6 +123,7 @@
     ["image", "🖼"],
     ["tick", "✓"],
     ["cross", "✗"],
+    ["snip", "⬚"],
   ];
 
   const MARKUP_COLORS: { rgb: number[]; css: string }[] = [
@@ -190,6 +205,14 @@
   let signMenu = $state(false);
   let signDialog = $state(false);
   let flattenAsk = $state(false);
+  // Text recognition: installed, its dialog open, and the tab offered it.
+  let ocrInstalled = $state(false);
+  let ocrOpen = $state(false);
+  let picturesOpen = $state(false);
+  let ocrOffer: number | null = $state(null);
+  let ocrOptions: OcrOptions = $state(settings().ocr);
+  let ocrSkipText = $state(settings().ocrSkipText);
+  let lastShown = "";
   // Organise pages: open dialogs, with the pages they act on.
   let cropFor: number[] | null = $state(null);
   let headerFor: number[] | null = $state(null);
@@ -230,6 +253,93 @@
     // 100% is actual size: 96 CSS px per inch, 72 points per inch.
     zoomPct = Math.round(v.zoom * (72 / 96) * 100);
     if (!bench) remember(tab.path, tab.name, v.pageCount, v.viewState());
+    ocrFollow(tab, v);
+  }
+
+  /**
+   * While text is recognised, the pages on screen are read first. A page
+   * shown without any text is offered recognition, once per document.
+   */
+  function ocrFollow(tab: Tab, v: Viewer) {
+    const shown = v.shownPages();
+    const key = `${tab.id}:${shown.join(",")}`;
+    if (key === lastShown) return;
+    lastShown = key;
+    if (tab.ocr) {
+      void ocrFirst(v.info.doc, shown).catch(() => {});
+      return;
+    }
+    if (!ocrInstalled || tab.ocrOffered || bench) return;
+    const p = shown[0];
+    void v.loadText(p).then((txt) => {
+      const now = tabs.find((x) => x.id === tab.id);
+      if (!now || now.ocrOffered || now.ocr || now.viewer !== v || v.currentPage() !== p) return;
+      if (!txt.text.trim()) {
+        ocrOffer = tab.id;
+        patchTab(tab.id, { ocrOffered: true });
+      }
+    });
+  }
+
+  /** Starts recognising text on `pages` of the active document. */
+  async function startOcr(pages: number[], options: OcrOptions, skipText: boolean) {
+    const tab = active;
+    const v = tab?.viewer;
+    if (!tab || !v) return;
+    ocrOptions = options;
+    ocrSkipText = skipText;
+    updateSettings({ ocr: options, ocrSkipText: skipText });
+    ocrOffer = null;
+    const run = await ocrStart(v.info.doc, pages, v.shownPages(), options, skipText);
+    patchTab(tab.id, { ocr: { run, done: 0, total: pages.length }, ocrOffered: true });
+  }
+
+  function stopOcr(tab: Tab) {
+    if (tab.viewer) void ocrCancel(tab.viewer.info.doc).catch(() => {});
+    patchTab(tab.id, { ocr: null });
+  }
+
+  function onOcrProgress(p: OcrProgress) {
+    const tab = tabs.find((x) => x.viewer?.info.doc === p.doc);
+    if (!tab || !tab.ocr || tab.ocr.run !== p.run) return;
+    if (p.pages.length) tab.viewer?.forgetText(p.pages);
+    if (p.status)
+      patchTab(tab.id, { dirty: p.status.dirty, canUndo: p.status.can_undo, canRedo: p.status.can_redo });
+    if (!p.finished) {
+      patchTab(tab.id, { ocr: { run: p.run, done: p.done, total: p.total } });
+      return;
+    }
+    patchTab(tab.id, { ocr: null });
+    if (p.error) error = `${tab.name}: ${p.error}`;
+    else {
+      const n = p.done - p.skipped;
+      notice = {
+        text: p.skipped ? t("ocr.doneSkipped", { n, skipped: p.skipped }) : t("ocr.done", { n }),
+        path: null,
+      };
+    }
+  }
+
+  /** The snip tool: reads the text in a box and copies it. */
+  async function snip(v: Viewer, page: number, rect: number[]) {
+    if (!ocrInstalled) {
+      error = t("ocr.missing");
+      return;
+    }
+    notice = { text: t("ocr.snipReading"), path: null };
+    try {
+      const text = (await ocrRegion(v.info.doc, page, rect, ocrOptions)).trim();
+      if (!text) {
+        notice = { text: t("ocr.snipEmpty"), path: null };
+        return;
+      }
+      await copyText(text, v);
+      const short = text.length > 80 ? `${text.slice(0, 80)}…` : text;
+      notice = { text: t("ocr.snipCopied", { text: short }), path: null };
+    } catch (e) {
+      notice = null;
+      error = String(e);
+    }
   }
 
   /**
@@ -285,6 +395,8 @@
           canUndo: false,
           canRedo: false,
           organize: false,
+          ocr: null,
+          ocrOffered: false,
         },
       ];
       activeId = id;
@@ -325,6 +437,7 @@
     v.onSelection = (has) => {
       if (id === activeId) hasSel = has;
     };
+    v.onSnip = (page, rect) => void snip(v, page, rect);
     v.onAnnotOpen = (a) => {
       if (a.kind === "note" || a.kind === "freetext") noteEdit = { a, text: a.contents };
     };
@@ -743,6 +856,24 @@
     return true;
   }
 
+  /** Makes a PDF of pictures, opens it, and recognises its text if asked. */
+  async function makePictures(paths: string[], size: number[] | null, ocr: boolean): Promise<boolean> {
+    const first = paths[0];
+    const dir = first.slice(0, first.length - nameOf(first).length);
+    const target = await pickSavePath({
+      defaultPath: `${dir}${t("pics.defaultName")}.pdf`,
+      filters: pdfFilter,
+    });
+    if (!target) return false;
+    const out = await imagesToPdf(paths, normalize(target), size);
+    const v = await open(out);
+    if (ocr && v) {
+      await tick();
+      await startOcr([...Array(v.pageCount).keys()], ocrOptions, false);
+    }
+    return true;
+  }
+
   // ------------------------------------------------------------- signing
 
   function chooseSignature(png: string) {
@@ -907,7 +1038,10 @@
 
   async function copySelection(v: Viewer) {
     const text = await v.selectedText();
-    if (!text) return;
+    if (text) await copyText(text, v);
+  }
+
+  async function copyText(text: string, v: Viewer) {
     try {
       await navigator.clipboard.writeText(text);
     } catch {
@@ -1006,7 +1140,17 @@
   function onKey(e: KeyboardEvent) {
     // Dialogs handle their own keys.
     if (printOpen || settingsOpen || pwPrompt || unsavedPrompt || noteEdit || restoreOffer) return;
-    if (cropFor || headerFor || splitOpen || mergeFiles_ || signDialog || flattenAsk) return;
+    if (
+      cropFor ||
+      headerFor ||
+      splitOpen ||
+      mergeFiles_ ||
+      signDialog ||
+      flattenAsk ||
+      ocrOpen ||
+      picturesOpen
+    )
+      return;
     const typing =
       e.target instanceof HTMLInputElement ||
       e.target instanceof HTMLSelectElement ||
@@ -1094,6 +1238,8 @@
         checkUpdates = settings().checkUpdates;
         author = settings().author;
         if (Array.isArray(settings().markupColor)) markupColor = settings().markupColor;
+        ocrOptions = settings().ocr;
+        ocrSkipText = settings().ocrSkipText;
         applyLook(theme, language);
         // Look for an update once start-up is well over; never in tests.
         if (checkUpdates && !navigator.webdriver) setTimeout(() => void checkForUpdate(), 5000);
@@ -1136,6 +1282,10 @@
     const unlistenFiles = listen<string[]>("open-files", (e) => {
       for (const p of e.payload) void open(p);
     });
+    const unlistenOcr = listen<OcrProgress>("ocr-progress", (e) => onOcrProgress(e.payload));
+    void ocrAvailable()
+      .then((a) => (ocrInstalled = a))
+      .catch(() => {});
     // Save where the reader is, then let the window close. This handler must
     // never stop the close: it cannot throw, and it waits at most half a
     // second (positions are also saved continuously while reading).
@@ -1163,6 +1313,7 @@
       void unlistenDrop.then((f) => f());
       void unlistenResize.then((f) => f());
       void unlistenFiles.then((f) => f());
+      void unlistenOcr.then((f) => f());
       void unlistenClose.then((f) => f());
     };
   });
@@ -1500,6 +1651,20 @@
         {/if}
       </span>
       <button onclick={() => (flattenAsk = true)} title={t("flat.title")}>{t("flat.button")}</button>
+      {#if ocrInstalled}
+        <button onclick={() => (ocrOpen = true)} disabled={!!active?.ocr} title={t("ocr.buttonTitle")}>
+          {t("ocr.button")}
+        </button>
+      {/if}
+      {#if active?.ocr}
+        {@const run = active.ocr}
+        {@const tab = active}
+        <span class="ocr-run" role="status">
+          <progress max={run.total} value={run.done}></progress>
+          {t("ocr.running", { done: Math.min(run.done + 1, run.total), total: run.total })}
+          <button onclick={() => stopOcr(tab)}>{t("ocr.stop")}</button>
+        </span>
+      {/if}
       {#if tool !== "select" || selAnnot}<span class="sep"></span>{/if}
       {#if selAnnot}
         <span class="ctx-kind">
@@ -1569,6 +1734,21 @@
         <button class="primary" onclick={install}>{t("up.install")}</button>
         <button onclick={() => (update = null)}>{t("up.later")}</button>
       {/if}
+    </div>
+  {/if}
+  {#if ocrOffer !== null && active && ocrOffer === active.id && !active.ocr}
+    <div class="update" role="status">
+      <span>{t("ocr.offer")}</span>
+      <button
+        class="primary"
+        onclick={() => {
+          ocrOffer = null;
+          ocrOpen = true;
+        }}
+      >
+        {t("ocr.offerButton")}
+      </button>
+      <button onclick={() => (ocrOffer = null)} aria-label={t("app.dismiss")}>×</button>
     </div>
   {/if}
   <div class="body">
@@ -1647,6 +1827,19 @@
           <p class="note">{t("flat.body")}</p>
         </Dialog>
       {/if}
+      {#if ocrOpen && viewer}
+        <OcrDialog
+          current={page}
+          count={viewer.pageCount}
+          options={ocrOptions}
+          skipText={ocrSkipText}
+          onstart={startOcr}
+          onclose={() => (ocrOpen = false)}
+        />
+      {/if}
+      {#if picturesOpen}
+        <PicturesDialog canOcr={ocrInstalled} onmake={makePictures} onclose={() => (picturesOpen = false)} />
+      {/if}
       {#if mergeFiles_}
         <MergeDialog initial={mergeFiles_} onmerge={combine} onclose={() => (mergeFiles_ = null)} />
       {/if}
@@ -1714,6 +1907,7 @@
             <p>
               <button class="primary" onclick={openDialog}>{t("app.openPdf")}</button>
               <button onclick={() => (mergeFiles_ = [])}>{t("merge.open")}</button>
+              <button onclick={() => (picturesOpen = true)}>{t("pics.open")}</button>
               <span class="hint">{t("app.openHint")}</span>
             </p>
             {#if recent.length}
@@ -2028,6 +2222,15 @@
     align-items: center;
     gap: 6px;
     color: var(--muted);
+  }
+  .ocr-run {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--muted);
+  }
+  .ocr-run progress {
+    width: 80px;
   }
   .tools {
     display: flex;

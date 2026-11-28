@@ -69,7 +69,8 @@ export type Tool =
   | "image"
   | "tick"
   | "cross"
-  | "sign";
+  | "sign"
+  | "snip";
 
 /** Tools that place something where the page is clicked (or a box is dragged). */
 const PLACING: Tool[] = ["note", "text", "stamp", "image", "tick", "cross", "sign"];
@@ -338,6 +339,8 @@ export class Viewer {
   onAnnotSelect: (a: AnnotView | null) => void = () => {};
   /** Called when an annotation is double-clicked (to edit its text). */
   onAnnotOpen: (a: AnnotView) => void = () => {};
+  /** The snip tool: a box dragged on `page` (left, top, right, bottom in page fractions). */
+  onSnip: (page: number, rect: number[]) => void = () => {};
   /** Does annotation edits; null while editing is not possible. */
   editor: Editor | null = null;
   private _tool: Tool = "select";
@@ -897,6 +900,27 @@ export class Viewer {
     this.schedule();
   }
 
+  /** Forgets the text of `pages` (it changed, as when text was recognised on them). */
+  forgetText(pages: number[]) {
+    for (const i of pages) {
+      this.texts.delete(i);
+      this.textLoads.delete(i);
+    }
+  }
+
+  /** The pages on screen now, the current one first. */
+  shownPages(): number[] {
+    const cur = this.currentPage();
+    const r = this.scroller.getBoundingClientRect();
+    const top = this.scroller.scrollTop;
+    const shown: number[] = [];
+    for (const i of this.views.keys()) {
+      const b = this.boxes.get(i);
+      if (b && b.y < top + r.height && b.y + b.ph / this.dpr > top) shown.push(i);
+    }
+    return [cur, ...shown.filter((i) => i !== cur).sort((a, b) => a - b)];
+  }
+
   /** The selected text's areas, page by page, in page fractions (left, top, right, bottom). */
   async selectionRects(): Promise<{ page: number; rects: number[][] }[]> {
     const o = this.ordered();
@@ -1238,7 +1262,7 @@ export class Viewer {
     e.preventDefault();
     this.scroller.focus();
     if (this._tool !== "select") {
-      if (!this.editor) return;
+      if (!this.editor && this._tool !== "snip") return;
       this.selectAnnot(null);
       this.gesture = { type: "draw", page: at.page, tool: this._tool, pts: [[at.fx, at.fy]] };
       this.drawAnnotLayer(at.page);
@@ -1647,6 +1671,14 @@ export class Viewer {
     const ed = this.editor;
     const page = g.type === "draw" ? g.page : g.a.page;
     try {
+      if (g.type === "draw" && g.tool === "snip") {
+        const [a, b] = [g.pts[0], g.pts[g.pts.length - 1]];
+        const rect = [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])];
+        const p = this.info.pages[g.page];
+        if ((rect[2] - rect[0]) * p.w * this._zoom >= 6 && (rect[3] - rect[1]) * p.h * this._zoom >= 6)
+          this.onSnip(g.page, rect);
+        return;
+      }
       if (!ed) return;
       if (g.type === "move" && (g.dx !== 0 || g.dy !== 0)) {
         await ed.move(g.a.id, g.dx, g.dy);
@@ -1949,15 +1981,22 @@ export class Viewer {
         shape("polyline", { points: g.pts.map((p) => p.join(",")).join(" "), fill: "none" });
       else if (g.tool === "line" || g.tool === "arrow")
         shape("line", { x1: String(p0[0]), y1: String(p0[1]), x2: String(p1[0]), y2: String(p1[1]) });
-      else if (g.tool === "square" || g.tool === "text" || g.tool === "image" || g.tool === "sign")
-        shape("rect", {
+      else if (
+        g.tool === "square" ||
+        g.tool === "text" ||
+        g.tool === "image" ||
+        g.tool === "sign" ||
+        g.tool === "snip"
+      ) {
+        const box = shape("rect", {
           x: String(Math.min(p0[0], p1[0])),
           y: String(Math.min(p0[1], p1[1])),
           width: String(Math.abs(p1[0] - p0[0])),
           height: String(Math.abs(p1[1] - p0[1])),
-          fill,
+          fill: g.tool === "snip" ? "none" : fill,
         });
-      else if (g.tool === "circle")
+        if (g.tool === "snip") box.setAttribute("stroke-dasharray", "4 3");
+      } else if (g.tool === "circle")
         shape("ellipse", {
           cx: String((p0[0] + p1[0]) / 2),
           cy: String((p0[1] + p1[1]) / 2),
