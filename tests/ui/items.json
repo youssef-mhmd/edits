@@ -1,0 +1,84 @@
+[
+ {
+  "eval": "window.__pp = (page, fx, fy) => { const v = __viewer; const box = v.boxes.get(page); const r = v.scroller.getBoundingClientRect(); return [r.left + box.x + fx * box.pw / v.dpr - v.scroller.scrollLeft, r.top + box.y + fy * box.ph / v.dpr - v.scroller.scrollTop]; }; window.__tool = (title) => [...document.querySelectorAll('.ctxbar button')].find(b => b.title === title).click(); window.__items = () => __viewer.items.items(0).map(i => i.kind.type + (i.kind.type === 'text' ? ':' + i.kind.text : '')); __viewer.setZoom(1); __viewer.goToPage(0);",
+  "wait": 1200,
+  "log": "__items()"
+ },
+ {
+  "eval": "__tool('Text box (page content)')",
+  "wait": 100
+ },
+ {
+  "drag": "[...__pp(0, 0.1, 0.1), ...__pp(0, 0.6, 0.15)]",
+  "wait": 300,
+  "log": "!!document.querySelector('.iedit')"
+ },
+ {
+  "eval": "const a = document.querySelector('.iedit'); a.value = 'فاتورة رقم ١٢ — Invoice 12'; a.dispatchEvent(new Event('input')); a.blur();",
+  "wait": 1500,
+  "log": "[__items(), !!document.querySelector('.tab .dirty')]",
+  "shot": "items-1-text"
+ },
+ {
+  "eval": "__tool('Rectangle (page content)')",
+  "wait": 100
+ },
+ {
+  "drag": "[...__pp(0, 0.1, 0.3), ...__pp(0, 0.4, 0.4)]",
+  "wait": 1200,
+  "log": "__items()"
+ },
+ {
+  "eval": "__tool('Arrow (page content)')",
+  "wait": 100
+ },
+ {
+  "drag": "[...__pp(0, 0.5, 0.3), ...__pp(0, 0.8, 0.45)]",
+  "wait": 1200,
+  "log": "__items()"
+ },
+ {
+  "eval": "__tool('Table (page content)')",
+  "wait": 100
+ },
+ {
+  "drag": "[...__pp(0, 0.1, 0.55), ...__pp(0, 0.1, 0.55)]",
+  "wait": 1500,
+  "log": "!!document.querySelector('.dlg')",
+  "shot": "items-2-table-dialog"
+ },
+ {
+  "eval": "const ts = [...document.querySelectorAll('.dlg textarea')]; ['البند','الكمية','السعر','قلم','2','10'].forEach((v, k) => { ts[k].value = v; ts[k].dispatchEvent(new Event('input')); }); document.querySelector('.dlg .primary').click();",
+  "wait": 1500,
+  "log": "[__items(), __viewer.items.items(0).find(i => i.kind.type === 'table')?.kind.cells]"
+ },
+ {
+  "eval": "__tool('Select text and annotations')",
+  "wait": 100
+ },
+ {
+  "drag": "[...__pp(0, 0.25, 0.35), ...__pp(0, 0.35, 0.35)]",
+  "wait": 1500,
+  "log": "__viewer.items.items(0).find(i => i.kind.type === 'shape')?.rect.map(v => +v.toFixed(3))",
+  "shot": "items-3-moved"
+ },
+ {
+  "eval": "0",
+  "wait": 100,
+  "log": "[...document.querySelectorAll('.itembar button')].length > 5"
+ },
+ {
+  "key": "z",
+  "code": "KeyZ",
+  "ctrl": true,
+  "vk": 90,
+  "wait": 1500,
+  "log": "__viewer.items.items(0).find(i => i.kind.type === 'shape')?.rect.map(v => +v.toFixed(3))"
+ },
+ {
+  "eval": "0",
+  "wait": 500,
+  "log": "document.querySelector('.toast')?.textContent ?? 'no error'",
+  "shot": "items-4-undone"
+ }
+]

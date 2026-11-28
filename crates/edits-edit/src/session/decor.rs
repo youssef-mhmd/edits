@@ -97,14 +97,14 @@ pub(super) struct Frame {
 
 impl Frame {
     /// Width and height as shown.
-    fn shown(&self) -> (f32, f32) {
+    pub fn shown(&self) -> (f32, f32) {
         let (w, h) = (self.bx[2] - self.bx[0], self.bx[3] - self.bx[1]);
         if self.rotate % 180 == 0 { (w, h) } else { (h, w) }
     }
 
     /// The matrix from shown coordinates (origin bottom-left of the page as
     /// shown) to user space.
-    fn matrix(&self) -> [f32; 6] {
+    pub fn matrix(&self) -> [f32; 6] {
         let [x0, y0, x1, y1] = self.bx;
         match self.rotate {
             90 => [0.0, 1.0, -1.0, 0.0, x1, y0],

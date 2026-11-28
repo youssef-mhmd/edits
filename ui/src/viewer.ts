@@ -27,7 +27,11 @@ import {
   type Target,
   type TileData,
   type Transport,
+  type Changed,
+  type ItemView,
+  type TableData,
 } from "./api";
+import { ItemLayer, isItemTool, type ItemDefaults, type ItemTool } from "./items";
 import { t as tr } from "./i18n.svelte";
 import { caretAt, cleanCopy, lineAt, overText, rangeRects, wordAt, type LoadedText } from "./textgeom";
 
@@ -70,7 +74,8 @@ export type Tool =
   | "tick"
   | "cross"
   | "sign"
-  | "snip";
+  | "snip"
+  | ItemTool;
 
 /** Tools that place something where the page is clicked (or a box is dragged). */
 const PLACING: Tool[] = ["note", "text", "stamp", "image", "tick", "cross", "sign"];
@@ -219,6 +224,8 @@ interface PageView {
   alayer: HTMLDivElement;
   /** Form fields to fill, placed like `alayer`; only on pages with fields. */
   flayer: HTMLDivElement | null;
+  /** Page items: frames, handles and guides, placed like `alayer`. */
+  ilayer: HTMLDivElement;
 }
 
 /** A caret: page index and position between characters of its text. */
@@ -343,6 +350,48 @@ export class Viewer {
   onSnip: (page: number, rect: number[]) => void = () => {};
   /** Does annotation edits; null while editing is not possible. */
   editor: Editor | null = null;
+  /** Page items changed (by this viewer's item layer). */
+  onItemsChanged: (c: Changed) => void = () => {};
+  /** The chosen page items changed. */
+  onItemSelection: (items: ItemView[]) => void = () => {};
+  /** Asks for a picture file for a picture item. */
+  pickPicture: () => Promise<string | null> = async () => null;
+  /** Opens the table editor for a table item on `page`. */
+  onEditTable: (page: number, item: ItemView) => void = () => {};
+  onError: (e: unknown) => void = () => {};
+  /** What new page items look like. */
+  itemDefaults: () => ItemDefaults = () => ({
+    text: {
+      font: "",
+      bold: false,
+      italic: false,
+      size: 12,
+      color: [0, 0, 0],
+      align: "start",
+      rtl: null,
+      line_height: 1.3,
+    },
+    stroke: this.drawStyle.color,
+    fill: this.drawStyle.fill,
+    width: this.drawStyle.width,
+    rtl: false,
+  });
+  /** Margins for guides, in points (left, top, right, bottom). */
+  margins: number[] | null = null;
+  /** Page items: text boxes, pictures, shapes, lines and tables. */
+  readonly items: ItemLayer = new ItemLayer({
+    doc: () => this.info.doc,
+    pageSize: (i) => this.info.pages[i] ?? { w: 1, h: 1 },
+    zoom: () => this._zoom,
+    layer: (i) => this.views.get(i)?.ilayer ?? null,
+    changed: (c) => this.onItemsChanged(c),
+    error: (e) => this.onError(e),
+    selection: (items) => this.onItemSelection(items),
+    pickPicture: () => this.pickPicture(),
+    editTable: (it) => this.onEditTable(this.itemPage(it), it),
+    defaults: () => this.itemDefaults(),
+    margins: () => this.margins,
+  });
   private _tool: Tool = "select";
   /** Stroke width (points), fill and opacity for drawing tools. */
   drawStyle: { width: number; fill: number[] | null; color: number[] } = {
@@ -900,6 +949,17 @@ export class Viewer {
     this.schedule();
   }
 
+  /** The page a loaded item is on. */
+  private itemPage(it: ItemView): number {
+    for (const i of this.views.keys()) if (this.items.items(i).some((x) => x.id === it.id)) return i;
+    return this.currentPage();
+  }
+
+  /** Writes a table item's new content. */
+  setTable(page: number, id: number, t: TableData) {
+    this.items.setTable(page, id, t);
+  }
+
   /** Forgets the text of `pages` (it changed, as when text was recognised on them). */
   forgetText(pages: number[]) {
     for (const i of pages) {
@@ -995,6 +1055,9 @@ export class Viewer {
         const alayer = document.createElement("div");
         alayer.className = "alayer";
         el.append(alayer);
+        const ilayer = document.createElement("div");
+        ilayer.className = "ilayer";
+        el.append(ilayer);
         const v: PageView = {
           el,
           preview: null,
@@ -1005,6 +1068,7 @@ export class Viewer {
           marks,
           alayer,
           flayer: null,
+          ilayer,
         };
         this.views.set(i, v);
         this.place(i, v);
@@ -1013,6 +1077,7 @@ export class Viewer {
         if (err) this.showError(v, err);
         this.loadLinks(i);
         this.loadAnnots(i);
+        this.items.load(i);
         this.drawFields(i);
         if (this.pageHasMarks(i)) void this.loadText(i).then(() => this.drawMarks(i));
       }
@@ -1261,6 +1326,12 @@ export class Viewer {
     if (!at) return;
     e.preventDefault();
     this.scroller.focus();
+    if (isItemTool(this._tool)) {
+      if (!this.editor) return;
+      this.selectAnnot(null);
+      this.items.down(this._tool, at.page, at.fx, at.fy, e);
+      return;
+    }
     if (this._tool !== "select") {
       if (!this.editor && this._tool !== "snip") return;
       this.selectAnnot(null);
@@ -1275,6 +1346,12 @@ export class Viewer {
       return;
     }
     const hit = this.annotAt(at.page, at.fx, at.fy);
+    if (!hit && this.editor && this.items.down("select", at.page, at.fx, at.fy, e)) {
+      this.selectAnnot(null);
+      this.clearSelection();
+      return;
+    }
+    if (hit) this.items.clear();
     if (hit && e.detail === 2 && this.selAnnot?.id === hit.id) {
       this.onAnnotOpen(hit);
       return;
@@ -1306,6 +1383,11 @@ export class Viewer {
   }
 
   private onDrag = (e: MouseEvent) => {
+    if (this.items.busy) {
+      const at = this.pointToPage(e.clientX, e.clientY);
+      if (at) this.items.drag(at.page, at.fx, at.fy, e);
+      return;
+    }
     if (this.gesture) {
       this.onGestureDrag(e);
       return;
@@ -1323,6 +1405,7 @@ export class Viewer {
   };
 
   private onMouseUp = () => {
+    if (this.items.busy) this.items.up();
     this.dragging = false;
     const g = this.gesture;
     this.gesture = null;
@@ -1338,6 +1421,12 @@ export class Viewer {
     }
     const at = this.pointToPage(e.clientX, e.clientY);
     const handle = at && this.handleAt(at);
+    const over =
+      !handle && at && !this.annotAt(at.page, at.fx, at.fy) && this.items.cursorAt(at.page, at.fx, at.fy);
+    if (over) {
+      this.scroller.style.cursor = over;
+      return;
+    }
     if (handle) {
       this.scroller.style.cursor =
         handle === "n" || handle === "s"
@@ -1495,7 +1584,10 @@ export class Viewer {
 
   set tool(t: Tool) {
     this._tool = t;
-    if (t !== "select") this.selectAnnot(null);
+    if (t !== "select") {
+      this.selectAnnot(null);
+      this.items.clear();
+    }
     this.scroller.style.cursor = t === "select" ? "" : "crosshair";
   }
 
@@ -1720,7 +1812,7 @@ export class Viewer {
     const w = b.pw / this.dpr;
     const h = b.ph / this.dpr;
     const odd = this._rotation % 2 === 1;
-    for (const layer of [v.alayer, v.flayer]) {
+    for (const layer of [v.alayer, v.flayer, v.ilayer]) {
       if (!layer) continue;
       const st = layer.style;
       st.width = `${odd ? h : w}px`;

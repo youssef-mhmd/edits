@@ -19,12 +19,14 @@ use crate::pdf::{Dict, FileSource, Obj, PdfError, PdfFile, Ref, write};
 mod decor;
 mod fields;
 mod flatten;
+mod items;
 mod ocr;
 mod pages;
 pub use decor::Decor;
 pub use fields::{FieldView, WidgetView};
+pub use items::{Item, ItemKind, TableItem, TextItem, TextStyle, font_families};
 pub use ocr::{OcrLayer, OcrWord};
-pub use pages::{PageSlot, PageSrc, images_to_pdf};
+pub use pages::{PageSlot, PageSrc, blank_pdf, images_to_pdf};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct Entry {
@@ -144,6 +146,10 @@ pub struct Recovery {
     #[serde(default)]
     ocr: Vec<Arc<OcrLayer>>,
     #[serde(default)]
+    item_lists: Vec<Arc<Vec<Item>>>,
+    #[serde(default)]
+    next_item: u32,
+    #[serde(default)]
     field_values: Vec<(Ref, fields::FieldEntry)>,
     #[serde(default)]
     flattened: bool,
@@ -190,6 +196,13 @@ pub struct Session {
     decors: Vec<Decor>,
     /// Text layers recognised on pages.
     ocr: Vec<Arc<OcrLayer>>,
+    /// Page items lists (each change makes a new one).
+    item_lists: Vec<Arc<Vec<Item>>>,
+    /// Items saved in the base file, by base page, read when first asked for.
+    saved: HashMap<u32, Option<Vec<Item>>>,
+    next_item: u32,
+    /// Page keys whose content changed (drawn again, not shown anew).
+    redraw: BTreeSet<u32>,
     /// The OCR run whose pages the last undo step holds, and that step.
     ocr_run: Option<(u64, u64)>,
     /// Form fields as read from the base file (read when first asked for).
@@ -240,6 +253,10 @@ impl Session {
             foreign: Vec::new(),
             decors: Vec::new(),
             ocr: Vec::new(),
+            item_lists: Vec::new(),
+            saved: HashMap::new(),
+            next_item: 0,
+            redraw: BTreeSet::new(),
             ocr_run: None,
             fields: None,
             field_values: BTreeMap::new(),
@@ -301,6 +318,8 @@ impl Session {
             foreign: self.foreign.iter().map(|f| (f.path.clone(), f.copied.clone())).collect(),
             decors: self.decors.clone(),
             ocr: self.ocr.clone(),
+            item_lists: self.item_lists.clone(),
+            next_item: self.next_item,
             field_values: fields::to_list(&self.field_values),
             flattened: self.flattened,
         })
@@ -349,6 +368,8 @@ impl Session {
             self.images = r.images;
             self.decors = r.decors;
             self.ocr = r.ocr;
+            self.item_lists = r.item_lists;
+            self.next_item = r.next_item;
             self.reindex();
             self.layout_changed = true;
         }
@@ -520,9 +541,11 @@ impl Session {
                 Vec::new()
             }
             Command::Pages { from, to } => {
-                self.order_at = if backwards { from } else { to };
+                let (a, b) = if backwards { (to, from) } else { (from, to) };
+                let (old, new) = (self.orders[a].clone(), self.orders[b].clone());
+                self.note_change(&old, &new);
+                self.order_at = b;
                 self.reindex();
-                self.layout_changed = true;
                 Vec::new()
             }
             Command::Add(id) | Command::Remove(id) => {
@@ -660,8 +683,6 @@ fn deflate(d: &[u8]) -> Vec<u8> {
 
 /// The objects of an embedded subset font; returns the Type0 font.
 fn font_objects(f: &edits_text::PdfFont, alloc: &mut dyn FnMut(Obj) -> Ref) -> Ref {
-    let ft = edits_text::font();
-    let k = 1000.0 / ft.units_per_em;
     let mut file = Dict::default();
     file.set(b"Length1", Obj::Int(f.program.len() as i64));
     file.set(b"Filter", Obj::name("FlateDecode"));
@@ -671,11 +692,11 @@ fn font_objects(f: &edits_text::PdfFont, alloc: &mut dyn FnMut(Obj) -> Ref) -> R
     desc.set(b"Type", Obj::name("FontDescriptor"));
     desc.set(b"FontName", base.clone());
     desc.set(b"Flags", Obj::Int(4));
-    desc.set(b"FontBBox", reals(&ft.bbox.map(|v| v * k)));
+    desc.set(b"FontBBox", reals(&f.bbox));
     desc.set(b"ItalicAngle", Obj::Int(0));
-    desc.set(b"Ascent", Obj::Real((ft.ascent * k) as f64));
-    desc.set(b"Descent", Obj::Real((ft.descent * k) as f64));
-    desc.set(b"CapHeight", Obj::Real((ft.cap_height * k) as f64));
+    desc.set(b"Ascent", Obj::Real(f.ascent as f64));
+    desc.set(b"Descent", Obj::Real(f.descent as f64));
+    desc.set(b"CapHeight", Obj::Real(f.cap_height as f64));
     desc.set(b"StemV", Obj::Int(80));
     desc.set(b"FontFile2", Obj::Ref(file));
     let desc = alloc(Obj::Dict(desc));

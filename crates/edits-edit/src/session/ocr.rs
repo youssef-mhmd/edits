@@ -214,11 +214,7 @@ impl Session {
             order[i as usize].ocr = Some(self.ocr.len() as u32 - 1);
         }
         let same_run = self.ocr_run.is_some_and(|(r, seq)| r == run && self.undo.last().is_some_and(|u| u.0 == seq));
-        // Pages keep their size and place: no new page list to show.
-        let layout = self.layout_changed;
-        let r = if same_run { self.replace_order(order) } else { self.set_order(order) };
-        self.layout_changed = layout;
-        r?;
+        if same_run { self.replace_order(order) } else { self.set_order(order) }?;
         if !same_run {
             self.ocr_run = self.undo.last().map(|u| (run, u.0));
         }

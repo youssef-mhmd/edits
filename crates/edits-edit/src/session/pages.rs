@@ -55,6 +55,27 @@ pub struct PageSlot {
     /// Recognised text added as an invisible layer (index into `Session::ocr`).
     #[serde(default)]
     pub ocr: Option<u32>,
+    /// The page's items as changed in this session (index into
+    /// `Session::item_lists`); None keeps what the page has.
+    #[serde(default)]
+    pub items: Option<u32>,
+}
+
+impl PageSlot {
+    /// True if `other` shows the same page the same way (its content may differ).
+    fn same_layout(&self, other: &PageSlot) -> bool {
+        self.key == other.key && self.src == other.src && self.turn == other.turn && self.crop == other.crop
+    }
+}
+
+/// The page keys whose content differs between two lists of the same layout.
+fn content_keys(a: &[PageSlot], b: &[PageSlot]) -> Vec<u32> {
+    a.iter().zip(b).filter(|(x, y)| x != y).map(|(x, _)| x.key).collect()
+}
+
+/// True if the two lists show the same pages in the same places.
+pub(super) fn same_layout(a: &[PageSlot], b: &[PageSlot]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.same_layout(y))
 }
 
 impl PageSlot {
@@ -66,7 +87,15 @@ impl PageSlot {
 /// The base file's pages, unchanged.
 pub(super) fn identity(n: u32) -> Vec<PageSlot> {
     (0..n)
-        .map(|i| PageSlot { key: i, src: PageSrc::Base(i), turn: 0, crop: None, decor: Vec::new(), ocr: None })
+        .map(|i| PageSlot {
+            key: i,
+            src: PageSrc::Base(i),
+            turn: 0,
+            crop: None,
+            decor: Vec::new(),
+            ocr: None,
+            items: None,
+        })
         .collect()
 }
 
@@ -79,6 +108,7 @@ pub(super) fn is_identity(order: &[PageSlot], n: u32) -> bool {
                 && s.crop.is_none()
                 && s.decor.is_empty()
                 && s.ocr.is_none()
+                && s.items.is_none()
         })
 }
 
@@ -217,62 +247,35 @@ fn image_page_size(img: &PdfImage) -> (f32, f32) {
     ((w * k).max(1.0), (h * k).max(1.0))
 }
 
-/// A PDF with one empty A4 page: the base a document made from pictures
-/// is built on (its page is left out when the document is written).
-fn empty_pdf() -> Vec<u8> {
-    let objs = [
-        "<< /Type /Catalog /Pages 2 0 R >>",
-        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << >> >>",
-    ];
-    let mut b = b"%PDF-1.7
-"
-    .to_vec();
+/// A new PDF of `pages` empty pages, `w` x `h` points. `margins` (left,
+/// top, right, bottom, in points) are kept in the catalog for the guides
+/// edits shows when placing items (/EditsMargins).
+pub fn blank_pdf(w: f32, h: f32, pages: u32, margins: Option<[f32; 4]>) -> Vec<u8> {
+    let r = |v: f32| crate::pdf::object::real(v as f64);
+    let n = pages.clamp(1, 10_000);
+    let kids: Vec<String> = (0..n).map(|i| format!("{} 0 R", 3 + i)).collect();
+    let mut catalog = String::from("<< /Type /Catalog /Pages 2 0 R");
+    if let Some(m) = margins {
+        catalog += &format!(" /EditsMargins [{} {} {} {}]", r(m[0]), r(m[1]), r(m[2]), r(m[3]));
+    }
+    catalog += " >>";
+    let mut objs = vec![catalog, format!("<< /Type /Pages /Kids [{}] /Count {n} >>", kids.join(" "))];
+    for _ in 0..n {
+        objs.push(format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Resources << >> >>", r(w), r(h)));
+    }
+    let mut b = b"%PDF-1.7\n".to_vec();
     let mut offs = Vec::new();
     for (i, o) in objs.iter().enumerate() {
         offs.push(b.len());
-        b.extend_from_slice(
-            format!(
-                "{} 0 obj
-{o}
-endobj
-",
-                i + 1
-            )
-            .as_bytes(),
-        );
+        b.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
     }
     let x = b.len();
-    b.extend_from_slice(
-        format!(
-            "xref
-0 {}
-0000000000 65535 f
-",
-            objs.len() + 1
-        )
-        .as_bytes(),
-    );
+    b.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f\r\n", objs.len() + 1).as_bytes());
     for o in offs {
-        b.extend_from_slice(
-            format!(
-                "{o:010} 00000 n
-"
-            )
-            .as_bytes(),
-        );
+        b.extend_from_slice(format!("{o:010} 00000 n\r\n").as_bytes());
     }
     b.extend_from_slice(
-        format!(
-            "trailer
-<< /Size {} /Root 1 0 R >>
-startxref
-{x}
-%%EOF
-",
-            objs.len() + 1
-        )
-        .as_bytes(),
+        format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{x}\n%%EOF\n", objs.len() + 1).as_bytes(),
     );
     b
 }
@@ -286,7 +289,7 @@ pub fn images_to_pdf(images: Vec<PdfImage>, size: Option<(f32, f32)>, target: &P
     }
     let n = images.len() as u32;
     let base = super::temp_path_for(target).with_extension("edits-base");
-    std::fs::write(&base, empty_pdf())?;
+    std::fs::write(&base, blank_pdf(595.0, 842.0, 1, None))?;
     let result = (|| {
         let mut s = Session::open(&base)?;
         s.insert_images_on(0, images, size)?;
@@ -321,6 +324,22 @@ impl Session {
         std::mem::take(&mut self.layout_changed)
     }
 
+    /// Records what going from page list `a` to `b` changes: the layout (the
+    /// document is shown anew) or only the content of some pages.
+    pub(super) fn note_change(&mut self, a: &[PageSlot], b: &[PageSlot]) {
+        if same_layout(a, b) {
+            self.redraw.extend(content_keys(a, b));
+        } else {
+            self.layout_changed = true;
+        }
+    }
+
+    /// The pages (indexes now) whose content changed since last asked.
+    pub fn take_redraw(&mut self) -> Vec<u32> {
+        let keys = std::mem::take(&mut self.redraw);
+        keys.into_iter().filter_map(|k| self.index_of(k)).collect()
+    }
+
     /// True if the pages differ from the base file's.
     pub fn pages_changed(&self) -> bool {
         self.flattened || !is_identity(self.order(), self.base_pages)
@@ -334,14 +353,16 @@ impl Session {
             return Ok(());
         }
         let from = self.order_at;
+        let layout = self.layout_changed;
+        self.note_change(&self.orders[from].clone(), &new);
         self.orders.push(new);
         self.order_at = self.orders.len() - 1;
         self.reindex();
-        self.layout_changed = true;
         self.push(Command::Pages { from, to: self.order_at });
         if let Err(e) = self.rebuild() {
             // Leave things as they were.
             self.undo.pop();
+            self.layout_changed = layout;
             self.order_at = from;
             self.orders.pop();
             self.reindex();
@@ -353,9 +374,9 @@ impl Session {
     /// Changes the page list now without a new undo step (the last step
     /// takes the change).
     pub(super) fn replace_order(&mut self, new: Vec<PageSlot>) -> Result<(), EditError> {
+        self.note_change(&self.orders[self.order_at].clone(), &new);
         let old = std::mem::replace(&mut self.orders[self.order_at], new);
         self.reindex();
-        self.layout_changed = true;
         if let Err(e) = self.rebuild() {
             self.orders[self.order_at] = old;
             self.reindex();
@@ -451,7 +472,15 @@ impl Session {
         let at = (at as usize).min(order.len());
         let slots: Vec<PageSlot> = srcs
             .into_iter()
-            .map(|src| PageSlot { key: self.new_key(), src, turn: 0, crop: None, decor: Vec::new(), ocr: None })
+            .map(|src| PageSlot {
+                key: self.new_key(),
+                src,
+                turn: 0,
+                crop: None,
+                decor: Vec::new(),
+                ocr: None,
+                items: None,
+            })
             .collect();
         order.splice(at..at, slots);
         self.set_order(order)
@@ -656,6 +685,8 @@ impl Session {
         let mut decorated: Vec<(usize, decor::PageText)> = Vec::new();
         // Pages with recognised text: where their dictionary is, and the layer.
         let mut recognised: Vec<(usize, u32)> = Vec::new();
+        // Pages with items: where their dictionary is, and the items.
+        let mut itemed: Vec<(usize, Arc<Vec<super::Item>>)> = Vec::new();
         let mut foreign_seen: HashSet<(u32, u32)> = HashSet::new();
         for s in order {
             // The page object, its dictionary, its annotations now, and whether to write it.
@@ -686,6 +717,7 @@ impl Session {
                             || s.crop.is_some()
                             || !s.decor.is_empty()
                             || s.ocr.is_some()
+                            || s.items.is_some()
                             || self.flattened
                             || touched.contains(&s.key);
                         let dict = if write { page_dict(&self.base, r)? } else { raw };
@@ -845,10 +877,21 @@ impl Session {
             if structural && let Some(k) = s.ocr {
                 recognised.push((out.objects.len(), k));
             }
+            if structural && let Some(k) = s.items {
+                if matches!(s.src, PageSrc::Base(_)) {
+                    super::items::strip_saved(&self.base, &mut dict);
+                }
+                if let Some(list) = self.item_lists.get(k as usize).filter(|l| !l.is_empty()) {
+                    itemed.push((out.objects.len(), list.clone()));
+                }
+            }
             out.objects.push((page_ref, Obj::Dict(dict)));
         }
         if !recognised.is_empty() {
             self.draw_ocr(&recognised, &mut out);
+        }
+        if !itemed.is_empty() {
+            self.draw_items(&itemed, &mut out);
         }
         if !decorated.is_empty() {
             self.draw_decor(&decorated, &mut out);
@@ -899,12 +942,7 @@ impl Session {
     /// own content wrapped in q/Q, then the words.
     fn draw_ocr(&self, recognised: &[(usize, u32)], out: &mut Out) {
         let font = super::ocr::font_objects(out);
-        let open = out.add(Obj::Stream(
-            Dict::default(),
-            b"q
-"
-            .to_vec(),
-        ));
+        let open = out.add(Obj::Stream(Dict::default(), b"q\n".to_vec()));
         for (at, k) in recognised {
             let Some(layer) = self.ocr.get(*k as usize) else { continue };
             let content = out.add(Obj::Stream(Dict::default(), super::ocr::content(layer)));
@@ -1045,7 +1083,7 @@ impl Session {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::model::{Annot, Kind};
 
@@ -1134,7 +1172,7 @@ mod tests {
         b
     }
 
-    fn temp(name: &str, bytes: &[u8]) -> PathBuf {
+    pub(crate) fn temp(name: &str, bytes: &[u8]) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("edits-pages-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join(name);

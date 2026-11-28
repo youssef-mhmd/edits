@@ -36,6 +36,12 @@
     formFields,
     fieldSet,
     flattenDoc,
+    fontFamilies,
+    docMargins,
+    newDocument,
+    type ItemView,
+    type TableData,
+    type TextStyle,
     ocrAvailable,
     ocrCancel,
     ocrFirst,
@@ -70,6 +76,9 @@
   import MergeDialog from "./MergeDialog.svelte";
   import HeaderDialog from "./HeaderDialog.svelte";
   import OcrDialog from "./OcrDialog.svelte";
+  import ItemBar from "./ItemBar.svelte";
+  import TableDialog from "./TableDialog.svelte";
+  import NewDocDialog from "./NewDocDialog.svelte";
   import PicturesDialog from "./PicturesDialog.svelte";
   import SignatureDialog from "./SignatureDialog.svelte";
   import Dialog from "./Dialog.svelte";
@@ -124,6 +133,16 @@
     ["tick", "✓"],
     ["cross", "✗"],
     ["snip", "⬚"],
+  ];
+  /** Tools that add page content (not annotations). */
+  const ITEM_TOOLS: [Tool, string][] = [
+    ["itext", "Aa"],
+    ["irect", "■"],
+    ["iellipse", "●"],
+    ["iline", "—"],
+    ["iarrow", "➜"],
+    ["iimage", "▣"],
+    ["itable", "▦"],
   ];
 
   const MARKUP_COLORS: { rgb: number[]; css: string }[] = [
@@ -209,6 +228,30 @@
   let ocrInstalled = $state(false);
   let ocrOpen = $state(false);
   let picturesOpen = $state(false);
+  let newOpen = $state(false);
+  // Page items: the chosen ones, installed fonts (read once), the table being edited.
+  let selItems: ItemView[] = $state.raw([]);
+  let fonts: [string, boolean][] = $state.raw([]);
+  let fontsAsked = false;
+  let tableEdit: { page: number; item: ItemView } | null = $state.raw(null);
+  let itemText: TextStyle = $state({
+    font: "",
+    bold: false,
+    italic: false,
+    size: 12,
+    color: [0, 0, 0],
+    align: "start",
+    rtl: null,
+    line_height: 1.3,
+  });
+
+  function loadFonts() {
+    if (fontsAsked) return;
+    fontsAsked = true;
+    void fontFamilies()
+      .then((f) => (fonts = f))
+      .catch(() => {});
+  }
   let ocrOffer: number | null = $state(null);
   let ocrOptions: OcrOptions = $state(settings().ocr);
   let ocrSkipText = $state(settings().ocrSkipText);
@@ -438,6 +481,28 @@
       if (id === activeId) hasSel = has;
     };
     v.onSnip = (page, rect) => void snip(v, page, rect);
+    v.onItemsChanged = (c) => changed(id, c, false);
+    v.onItemSelection = (items) => {
+      if (id !== activeId) return;
+      selItems = items;
+      if (items.length) loadFonts();
+    };
+    v.pickPicture = async () => {
+      const r = await pickFile({ filters: [{ name: "JPEG, PNG", extensions: ["jpg", "jpeg", "png"] }] });
+      return typeof r === "string" ? r : null;
+    };
+    v.onEditTable = (page, item) => (tableEdit = { page, item });
+    void docMargins(info.doc)
+      .then((m) => (v.margins = m))
+      .catch(() => {});
+    v.onError = (e) => (error = String(e));
+    v.itemDefaults = () => ({
+      text: { ...itemText },
+      rtl: lang() === "ar",
+      stroke: drawColor,
+      fill: drawFill ? drawColor : null,
+      width: drawWidth,
+    });
     v.onAnnotOpen = (a) => {
       if (a.kind === "note" || a.kind === "freetext") noteEdit = { a, text: a.contents };
     };
@@ -529,8 +594,11 @@
     }
   }
 
-  /** Takes in a change: undo state on the tab, pages drawn again, annotations read again. */
-  function changed(tabId: number, c: Changed) {
+  /**
+   * Takes in a change: undo state on the tab, pages drawn again, annotations
+   * and page items read again (`items` false when the item layer made it).
+   */
+  function changed(tabId: number, c: Changed, items = true) {
     patchTab(tabId, { dirty: c.status.dirty, canUndo: c.status.can_undo, canRedo: c.status.can_redo });
     if (c.info) {
       replaceViewer(tabId, c.info);
@@ -540,6 +608,7 @@
     const v = tabs.find((t) => t.id === tabId)?.viewer;
     v?.invalidatePages(c.pages);
     v?.reloadAnnots(c.pages);
+    if (items) v?.items.reload(c.pages);
     if (tabId === activeId && comments !== null) void loadComments();
   }
 
@@ -608,6 +677,7 @@
   function setTool(t: Tool) {
     tool = t;
     if (viewer) viewer.tool = t;
+    if (t === "itext" || t === "itable") loadFonts();
   }
 
   function syncDrawStyle() {
@@ -856,6 +926,16 @@
     return true;
   }
 
+  /** Makes a new document of empty pages and opens it. */
+  async function makeNew(size: number[], pages: number, margins: number[]): Promise<boolean> {
+    const target = await pickSavePath({ defaultPath: `${t("new.defaultName")}.pdf`, filters: pdfFilter });
+    if (!target) return false;
+    const out = await newDocument(normalize(target), size, pages, margins);
+    const v = await open(out);
+    if (v) setTool("itext");
+    return true;
+  }
+
   /** Makes a PDF of pictures, opens it, and recognises its text if asked. */
   async function makePictures(paths: string[], size: number[] | null, ocr: boolean): Promise<boolean> {
     const first = paths[0];
@@ -1060,6 +1140,7 @@
     const pageWise = v.mode !== "continuous";
     const turn = (forward: boolean) => () => (forward ? v.nextPage() : v.prevPage());
     const screen = (dir: number) => () => scrollBy(dir * v.scroller.clientHeight * 0.9);
+    if (!e.altKey && !v.hasSelection && v.items.key(e, v.currentPage())) return () => {};
     if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "c" && v.hasSelection)
       return () => void copySelection(v);
     if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "z") return () => undo();
@@ -1122,6 +1203,7 @@
   function appKeyAction(e: KeyboardEvent): (() => void) | null {
     const k = e.key.toLowerCase();
     if (e.ctrlKey && k === "o") return () => void openDialog();
+    if (e.ctrlKey && k === "n") return () => (newOpen = true);
     if (e.ctrlKey && k === "w") return () => closeTab(activeId);
     if (e.ctrlKey && e.key === "Tab") return () => cycleTab(e.shiftKey ? -1 : 1);
     if (e.ctrlKey && e.key === "PageDown") return () => cycleTab(1);
@@ -1148,7 +1230,9 @@
       signDialog ||
       flattenAsk ||
       ocrOpen ||
-      picturesOpen
+      picturesOpen ||
+      newOpen ||
+      tableEdit
     )
       return;
     const typing =
@@ -1667,6 +1751,20 @@
           </div>
         {/if}
       </span>
+      <span class="sep"></span>
+      <span class="tools" role="group" aria-label={t("tool.insert")}>
+        {#each ITEM_TOOLS as [id, icon] (id)}
+          <button
+            class:active={tool === id}
+            aria-pressed={tool === id}
+            title={t(`tool.${id}` as "tool.select")}
+            aria-label={t(`tool.${id}` as "tool.select")}
+            onclick={() => setTool(id as Tool)}
+          >
+            {icon}
+          </button>
+        {/each}
+      </span>
       <button onclick={() => (flattenAsk = true)} title={t("flat.title")}>{t("flat.button")}</button>
       {#if ocrInstalled}
         <button onclick={() => (ocrOpen = true)} disabled={!!active?.ocr} title={t("ocr.buttonTitle")}>
@@ -1681,6 +1779,16 @@
           {t("ocr.running", { done: Math.min(run.done + 1, run.total), total: run.total })}
           <button onclick={() => stopOcr(tab)}>{t("ocr.stop")}</button>
         </span>
+      {/if}
+      {#if selItems.length && viewer}
+        <span class="sep"></span>
+        <ItemBar
+          items={selItems}
+          layer={viewer.items}
+          {fonts}
+          onstyle={(st) => (itemText = { ...itemText, ...st })}
+          onedittable={(it) => (tableEdit = { page: viewer?.currentPage() ?? 0, item: it })}
+        />
       {/if}
       {#if tool !== "select" || selAnnot}<span class="sep"></span>{/if}
       {#if selAnnot}
@@ -1854,6 +1962,18 @@
           onclose={() => (ocrOpen = false)}
         />
       {/if}
+      {#if tableEdit && viewer && tableEdit.item.kind.type === "table"}
+        {@const te = tableEdit}
+        {@const kind = te.item.kind as { type: "table" } & TableData}
+        <TableDialog
+          table={kind}
+          ondone={(tb) => viewer?.setTable(te.page, te.item.id, tb)}
+          onclose={() => (tableEdit = null)}
+        />
+      {/if}
+      {#if newOpen}
+        <NewDocDialog onmake={makeNew} onclose={() => (newOpen = false)} />
+      {/if}
       {#if picturesOpen}
         <PicturesDialog canOcr={ocrInstalled} onmake={makePictures} onclose={() => (picturesOpen = false)} />
       {/if}
@@ -1923,6 +2043,7 @@
           <div class="start-inner">
             <p>
               <button class="primary" onclick={openDialog}>{t("app.openPdf")}</button>
+              <button onclick={() => (newOpen = true)}>{t("new.open")}</button>
               <button onclick={() => (mergeFiles_ = [])}>{t("merge.open")}</button>
               <button onclick={() => (picturesOpen = true)}>{t("pics.open")}</button>
               <span class="hint">{t("app.openHint")}</span>

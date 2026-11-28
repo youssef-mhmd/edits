@@ -22,6 +22,9 @@ const app = spawn(exe, pdf ? pdf.split("|") : [], {
     // UI_SINGLE_INSTANCE=1 keeps it on, to test second launches ({"launch": FILE} steps).
     ...(process.env.UI_SINGLE_INSTANCE ? {} : { EDITS_NO_SINGLE_INSTANCE: "1" }),
     EDITS_STATE_DIR: stateDir,
+    // Its own WebView2 browser: with the user's edits open, a shared one
+    // would ignore the debugging port.
+    WEBVIEW2_USER_DATA_FOLDER: `${stateDir}/webview`,
   },
   stdio: "ignore",
 });

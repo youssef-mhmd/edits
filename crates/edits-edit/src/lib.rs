@@ -11,5 +11,6 @@ pub mod session;
 
 pub use model::{Annot, AnnotId, Kind, pdf_date_now};
 pub use session::{
-    Decor, EditError, Listed, OcrLayer, OcrWord, Recovery, Session, Status, images_to_pdf, temp_path_for,
+    Decor, EditError, Item, ItemKind, Listed, OcrLayer, OcrWord, Recovery, Session, Status, TableItem, TextItem,
+    TextStyle, blank_pdf, font_families, images_to_pdf, temp_path_for,
 };
