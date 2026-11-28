@@ -15,12 +15,16 @@
 //! edits-bench check [DIR]                          open and render every corpus file, one process each
 //! edits-bench pdf-check [DIR]                    edits' own PDF reader and update writer on every file
 //! edits-bench lopdf-check [DIR]                    load, decrypt, clean and re-save every file with lopdf
+//! edits-bench ocr-parity [TESTS] [IMAGES]       edits-ocr against arabic-ocr's stored output (tests/ocr)
+//! edits-bench ocr IN OUT [--correct-words]     OCR a PNG or a folder of PNGs into arabic-ocr JSON files
+//! edits-bench ocr-pdf SRC OUT [FIRST [LAST]]    searchable copy of SRC, its text read back and searched
 //! ```
 
 mod app;
 mod check;
 mod core_bench;
 mod corpus;
+mod ocr;
 mod stats;
 mod targets;
 
@@ -116,6 +120,25 @@ fn main() -> ExitCode {
         "pages-check" => check::pages_all(&dir_arg(&args)),
         "forms-check" => check::forms_all(&dir_arg(&args), args.get(1).map(Path::new)),
         "lopdf-check" => check::lopdf_all(&dir_arg(&args)),
+        "ocr-parity" => ocr::parity(
+            Path::new(args.first().map(String::as_str).unwrap_or("tests/ocr")),
+            Path::new(args.get(1).map(String::as_str).unwrap_or("corpus/files/ocr")),
+        ),
+        "ocr" => {
+            let correct = take_flag(&mut args, "--correct-words");
+            match (args.first(), args.get(1)) {
+                (Some(i), Some(o)) => ocr::batch(Path::new(i), Path::new(o), correct),
+                _ => Err("ocr needs IN OUT".into()),
+            }
+        }
+        "ocr-pdf" => match (args.first(), args.get(1)) {
+            (Some(i), Some(o)) => {
+                let n = |k: usize| args.get(k).and_then(|v| v.parse().ok());
+                let range = n(2).map(|a| (a, n(3).unwrap_or(a)));
+                ocr::to_pdf(Path::new(i), Path::new(o), range)
+            }
+            _ => Err("ocr-pdf needs SRC OUT [FIRST [LAST]]".into()),
+        },
         // Internal: run by `check` in a child process so a crash is contained.
         "render-file" => match args.first() {
             Some(f) => check::render_file(&PathBuf::from(f)),

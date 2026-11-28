@@ -19,10 +19,12 @@ use crate::pdf::{Dict, FileSource, Obj, PdfError, PdfFile, Ref, write};
 mod decor;
 mod fields;
 mod flatten;
+mod ocr;
 mod pages;
 pub use decor::Decor;
 pub use fields::{FieldView, WidgetView};
-pub use pages::{PageSlot, PageSrc};
+pub use ocr::{OcrLayer, OcrWord};
+pub use pages::{PageSlot, PageSrc, images_to_pdf};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct Entry {
@@ -140,6 +142,8 @@ pub struct Recovery {
     #[serde(default)]
     decors: Vec<Decor>,
     #[serde(default)]
+    ocr: Vec<Arc<OcrLayer>>,
+    #[serde(default)]
     field_values: Vec<(Ref, fields::FieldEntry)>,
     #[serde(default)]
     flattened: bool,
@@ -184,6 +188,10 @@ pub struct Session {
     foreign: Vec<pages::Foreign>,
     /// Headers, footers and watermarks added to pages.
     decors: Vec<Decor>,
+    /// Text layers recognised on pages.
+    ocr: Vec<Arc<OcrLayer>>,
+    /// The OCR run whose pages the last undo step holds, and that step.
+    ocr_run: Option<(u64, u64)>,
     /// Form fields as read from the base file (read when first asked for).
     fields: Option<Vec<crate::forms::Field>>,
     /// Values given to fields, with their history.
@@ -231,6 +239,8 @@ impl Session {
             images: Vec::new(),
             foreign: Vec::new(),
             decors: Vec::new(),
+            ocr: Vec::new(),
+            ocr_run: None,
             fields: None,
             field_values: BTreeMap::new(),
             flattened: false,
@@ -290,6 +300,7 @@ impl Session {
             images: self.images.clone(),
             foreign: self.foreign.iter().map(|f| (f.path.clone(), f.copied.clone())).collect(),
             decors: self.decors.clone(),
+            ocr: self.ocr.clone(),
             field_values: fields::to_list(&self.field_values),
             flattened: self.flattened,
         })
@@ -337,6 +348,7 @@ impl Session {
             self.next_key = r.next_key;
             self.images = r.images;
             self.decors = r.decors;
+            self.ocr = r.ocr;
             self.reindex();
             self.layout_changed = true;
         }

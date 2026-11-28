@@ -10,4 +10,6 @@ pub mod pdf;
 pub mod session;
 
 pub use model::{Annot, AnnotId, Kind, pdf_date_now};
-pub use session::{Decor, EditError, Listed, Recovery, Session, Status, temp_path_for};
+pub use session::{
+    Decor, EditError, Listed, OcrLayer, OcrWord, Recovery, Session, Status, images_to_pdf, temp_path_for,
+};

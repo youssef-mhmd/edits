@@ -33,6 +33,8 @@ pub enum PageSrc {
     Blank { w: f32, h: f32 },
     /// A page showing picture `n` of the session's pictures.
     Image(u32),
+    /// Picture `n` centred on a page `w` x `h` points, as large as fits.
+    ImageOn { n: u32, w: f32, h: f32 },
     /// Page `page` of another file (`file` indexes the session's list).
     Foreign { file: u32, page: u32 },
 }
@@ -50,6 +52,9 @@ pub struct PageSlot {
     /// Headers, footers and watermarks added (indexes into `Session::decors`).
     #[serde(default)]
     pub decor: Vec<u32>,
+    /// Recognised text added as an invisible layer (index into `Session::ocr`).
+    #[serde(default)]
+    pub ocr: Option<u32>,
 }
 
 impl PageSlot {
@@ -60,7 +65,9 @@ impl PageSlot {
 
 /// The base file's pages, unchanged.
 pub(super) fn identity(n: u32) -> Vec<PageSlot> {
-    (0..n).map(|i| PageSlot { key: i, src: PageSrc::Base(i), turn: 0, crop: None, decor: Vec::new() }).collect()
+    (0..n)
+        .map(|i| PageSlot { key: i, src: PageSrc::Base(i), turn: 0, crop: None, decor: Vec::new(), ocr: None })
+        .collect()
 }
 
 pub(super) fn is_identity(order: &[PageSlot], n: u32) -> bool {
@@ -71,6 +78,7 @@ pub(super) fn is_identity(order: &[PageSlot], n: u32) -> bool {
                 && s.turn == 0
                 && s.crop.is_none()
                 && s.decor.is_empty()
+                && s.ocr.is_none()
         })
 }
 
@@ -209,6 +217,85 @@ fn image_page_size(img: &PdfImage) -> (f32, f32) {
     ((w * k).max(1.0), (h * k).max(1.0))
 }
 
+/// A PDF with one empty A4 page: the base a document made from pictures
+/// is built on (its page is left out when the document is written).
+fn empty_pdf() -> Vec<u8> {
+    let objs = [
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << >> >>",
+    ];
+    let mut b = b"%PDF-1.7
+"
+    .to_vec();
+    let mut offs = Vec::new();
+    for (i, o) in objs.iter().enumerate() {
+        offs.push(b.len());
+        b.extend_from_slice(
+            format!(
+                "{} 0 obj
+{o}
+endobj
+",
+                i + 1
+            )
+            .as_bytes(),
+        );
+    }
+    let x = b.len();
+    b.extend_from_slice(
+        format!(
+            "xref
+0 {}
+0000000000 65535 f
+",
+            objs.len() + 1
+        )
+        .as_bytes(),
+    );
+    for o in offs {
+        b.extend_from_slice(
+            format!(
+                "{o:010} 00000 n
+"
+            )
+            .as_bytes(),
+        );
+    }
+    b.extend_from_slice(
+        format!(
+            "trailer
+<< /Size {} /Root 1 0 R >>
+startxref
+{x}
+%%EOF
+",
+            objs.len() + 1
+        )
+        .as_bytes(),
+    );
+    b
+}
+
+/// Writes a new PDF at `target` with one page per picture, in order: on
+/// pages of `size` points (turned to suit each picture), or, when None, on
+/// pages the picture's shape. Returns the bytes written.
+pub fn images_to_pdf(images: Vec<PdfImage>, size: Option<(f32, f32)>, target: &Path) -> Result<u64, EditError> {
+    if images.is_empty() {
+        return Err(EditError::Pages("no pictures chosen".into()));
+    }
+    let n = images.len() as u32;
+    let base = super::temp_path_for(target).with_extension("edits-base");
+    std::fs::write(&base, empty_pdf())?;
+    let result = (|| {
+        let mut s = Session::open(&base)?;
+        s.insert_images_on(0, images, size)?;
+        s.export(&(0..n).collect::<Vec<_>>(), target)
+    })();
+    let _ = std::fs::remove_file(&base);
+    result
+}
+
 impl Session {
     pub(super) fn order(&self) -> &[PageSlot] {
         &self.orders[self.order_at]
@@ -239,7 +326,7 @@ impl Session {
         self.flattened || !is_identity(self.order(), self.base_pages)
     }
 
-    fn set_order(&mut self, new: Vec<PageSlot>) -> Result<(), EditError> {
+    pub(super) fn set_order(&mut self, new: Vec<PageSlot>) -> Result<(), EditError> {
         if new.is_empty() {
             return Err(EditError::Pages("a document needs at least one page".into()));
         }
@@ -263,7 +350,21 @@ impl Session {
         Ok(())
     }
 
-    fn checked(&self, pages: &[u32]) -> Result<BTreeSet<usize>, EditError> {
+    /// Changes the page list now without a new undo step (the last step
+    /// takes the change).
+    pub(super) fn replace_order(&mut self, new: Vec<PageSlot>) -> Result<(), EditError> {
+        let old = std::mem::replace(&mut self.orders[self.order_at], new);
+        self.reindex();
+        self.layout_changed = true;
+        if let Err(e) = self.rebuild() {
+            self.orders[self.order_at] = old;
+            self.reindex();
+            return Err(e.into());
+        }
+        Ok(())
+    }
+
+    pub(super) fn checked(&self, pages: &[u32]) -> Result<BTreeSet<usize>, EditError> {
         let n = self.order().len();
         let set: BTreeSet<usize> = pages.iter().map(|p| *p as usize).collect();
         match set.iter().find(|p| **p >= n) {
@@ -350,7 +451,7 @@ impl Session {
         let at = (at as usize).min(order.len());
         let slots: Vec<PageSlot> = srcs
             .into_iter()
-            .map(|src| PageSlot { key: self.new_key(), src, turn: 0, crop: None, decor: Vec::new() })
+            .map(|src| PageSlot { key: self.new_key(), src, turn: 0, crop: None, decor: Vec::new(), ocr: None })
             .collect();
         order.splice(at..at, slots);
         self.set_order(order)
@@ -364,10 +465,31 @@ impl Session {
 
     /// Inserts a page for each picture before index `at`.
     pub fn insert_images(&mut self, at: u32, images: Vec<PdfImage>) -> Result<(), EditError> {
+        self.insert_images_on(at, images, None)
+    }
+
+    /// Inserts pictures as pages before index `at`: on pages of `size`
+    /// points (width, height; turned to suit each picture), or, when None,
+    /// on pages the picture's shape.
+    pub fn insert_images_on(
+        &mut self,
+        at: u32,
+        images: Vec<PdfImage>,
+        size: Option<(f32, f32)>,
+    ) -> Result<(), EditError> {
         let mut srcs = Vec::new();
         for img in images {
+            let landscape = img.width > img.height;
             self.images.push(Arc::new(img));
-            srcs.push(PageSrc::Image(self.images.len() as u32 - 1));
+            let n = self.images.len() as u32 - 1;
+            srcs.push(match size {
+                None => PageSrc::Image(n),
+                Some((a, b)) => {
+                    let (short, long) = (a.min(b).clamp(72.0, 14_400.0), a.max(b).clamp(72.0, 14_400.0));
+                    let (w, h) = if landscape { (long, short) } else { (short, long) };
+                    PageSrc::ImageOn { n, w, h }
+                }
+            });
         }
         self.insert(at, srcs)
     }
@@ -532,6 +654,8 @@ impl Session {
         // Pages with headers and footers: where their dictionary is in
         // `out.objects`, and their text laid out.
         let mut decorated: Vec<(usize, decor::PageText)> = Vec::new();
+        // Pages with recognised text: where their dictionary is, and the layer.
+        let mut recognised: Vec<(usize, u32)> = Vec::new();
         let mut foreign_seen: HashSet<(u32, u32)> = HashSet::new();
         for s in order {
             // The page object, its dictionary, its annotations now, and whether to write it.
@@ -561,6 +685,7 @@ impl Session {
                             || s.turn != 0
                             || s.crop.is_some()
                             || !s.decor.is_empty()
+                            || s.ocr.is_some()
                             || self.flattened
                             || touched.contains(&s.key);
                         let dict = if write { page_dict(&self.base, r)? } else { raw };
@@ -598,23 +723,27 @@ impl Session {
                     d.set(b"Resources", Obj::Dict(Dict::default()));
                     (out.reserve(), d, Vec::new(), true)
                 }
-                PageSrc::Image(n) => {
+                PageSrc::Image(n) | PageSrc::ImageOn { n, .. } => {
                     let img = self.images.get(*n as usize).ok_or(PdfError::Damaged("picture missing".into()))?;
-                    let (w, h) = image_page_size(img);
+                    let (pw, ph) = match s.src {
+                        PageSrc::ImageOn { w, h, .. } => (w, h),
+                        _ => image_page_size(img),
+                    };
+                    // The picture as large as fits, centred.
+                    let k = (pw / img.width.max(1) as f32).min(ph / img.height.max(1) as f32);
+                    let (w, h) = (img.width.max(1) as f32 * k, img.height.max(1) as f32 * k);
+                    let (x, y) = ((pw - w) / 2.0, (ph - h) / 2.0);
                     let im = image_objects(img, &mut |o| out.add(o));
                     let mut xo = Dict::default();
                     xo.set(b"Im0", Obj::Ref(im));
                     let mut res = Dict::default();
                     res.set(b"XObject", Obj::Dict(xo));
-                    let ops = format!(
-                        "q {} 0 0 {} 0 0 cm /Im0 Do Q",
-                        crate::pdf::object::real(w as f64),
-                        crate::pdf::object::real(h as f64)
-                    );
+                    let r = |v: f32| crate::pdf::object::real(v as f64);
+                    let ops = format!("q {} 0 0 {} {} {} cm /Im0 Do Q", r(w), r(h), r(x), r(y));
                     let content = out.add(Obj::Stream(Dict::default(), ops.into_bytes()));
                     let mut d = Dict::default();
                     d.set(b"Type", Obj::name("Page"));
-                    d.set(b"MediaBox", reals(&[0.0, 0.0, w, h]));
+                    d.set(b"MediaBox", reals(&[0.0, 0.0, pw, ph]));
                     d.set(b"Resources", Obj::Dict(res));
                     d.set(b"Contents", Obj::Ref(content));
                     (out.reserve(), d, Vec::new(), true)
@@ -713,7 +842,13 @@ impl Session {
                     decorated.push((out.objects.len(), decor::lay_out(&ds, frame, index, order.len())));
                 }
             }
+            if structural && let Some(k) = s.ocr {
+                recognised.push((out.objects.len(), k));
+            }
             out.objects.push((page_ref, Obj::Dict(dict)));
+        }
+        if !recognised.is_empty() {
+            self.draw_ocr(&recognised, &mut out);
         }
         if !decorated.is_empty() {
             self.draw_decor(&decorated, &mut out);
@@ -758,6 +893,36 @@ impl Session {
             out.objects.push((cr, Obj::Dict(c)));
         }
         Ok((out.objects, assigned))
+    }
+
+    /// Adds the invisible text layers: one font for all of them, the page's
+    /// own content wrapped in q/Q, then the words.
+    fn draw_ocr(&self, recognised: &[(usize, u32)], out: &mut Out) {
+        let font = super::ocr::font_objects(out);
+        let open = out.add(Obj::Stream(
+            Dict::default(),
+            b"q
+"
+            .to_vec(),
+        ));
+        for (at, k) in recognised {
+            let Some(layer) = self.ocr.get(*k as usize) else { continue };
+            let content = out.add(Obj::Stream(Dict::default(), super::ocr::content(layer)));
+            let Obj::Dict(dict) = &mut out.objects[*at].1 else { continue };
+            let mut contents = vec![Obj::Ref(open)];
+            match dict.get(b"Contents") {
+                Some(Obj::Array(a)) => contents.extend(a.iter().cloned()),
+                Some(c @ Obj::Ref(_)) => contents.push(c.clone()),
+                _ => {}
+            }
+            contents.push(Obj::Ref(content));
+            dict.set(b"Contents", Obj::Array(contents));
+            let mut res = dict.get(b"Resources").and_then(Obj::as_dict).cloned().unwrap_or_default();
+            let mut fonts = res.get(b"Font").and_then(Obj::as_dict).cloned().unwrap_or_default();
+            fonts.set(super::ocr::FONT.as_bytes(), Obj::Ref(font));
+            res.set(b"Font", Obj::Dict(fonts));
+            dict.set(b"Resources", Obj::Dict(res));
+        }
     }
 
     /// Adds the header and footer text to the pages in `decorated`: one
@@ -1227,5 +1392,66 @@ mod tests {
         assert_eq!(d.get(b"CropBox").and_then(Obj::numbers).unwrap(), [10.0, 20.0, 60.0, 90.0]);
         s.crop_pages(&[(1, None)]).unwrap();
         assert!(s.tail().is_none(), "uncropped is the file as it was");
+    }
+
+    #[test]
+    fn recognised_text_is_one_step_per_run() {
+        use crate::session::{OcrLayer, OcrWord};
+        let path = temp("ocr.pdf", &pages_pdf(3));
+        let mut s = Session::open(&path).unwrap();
+        let layer = |t: &str| OcrLayer {
+            words: vec![OcrWord { quad: [[10.0, 50.0], [60.0, 50.0], [60.0, 40.0], [10.0, 40.0]], shown: t.into() }],
+        };
+        s.set_page_text(7, vec![(0, layer("ab "))]).unwrap();
+        s.set_page_text(7, vec![(2, layer("cd "))]).unwrap();
+        assert!(!s.take_layout_changed(), "pages keep their place");
+        assert!(s.has_page_text(0) && !s.has_page_text(1) && s.has_page_text(2));
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes.extend_from_slice(&s.tail().unwrap());
+        let f = PdfFile::open(bytes).unwrap();
+        let pages = f.pages().unwrap();
+        let d = page_dict(&f, pages[2]).unwrap();
+        let contents = d.get(b"Contents").and_then(Obj::as_array).unwrap().to_vec();
+        let Obj::Stream(_, last) = f.resolve(contents.last().unwrap()).unwrap() else { panic!() };
+        let last = String::from_utf8(last).unwrap();
+        assert!(last.contains("3 Tr") && last.contains("[<0063> <0064> <0020>] TJ"), "{last}");
+        let res = d.get(b"Resources").and_then(Obj::as_dict).unwrap();
+        assert!(res.get(b"Font").and_then(Obj::as_dict).unwrap().get(b"EditsOcr").is_some());
+        assert!(res.get(b"ProcSet").is_some(), "inherited resources are kept");
+        // One undo takes both pages' text away.
+        s.undo().unwrap();
+        assert!(!s.has_page_text(0) && !s.has_page_text(2));
+        assert!(s.tail().is_none());
+        // A new run is a new step.
+        s.redo().unwrap();
+        s.set_page_text(8, vec![(1, layer("e "))]).unwrap();
+        s.undo().unwrap();
+        assert!(s.has_page_text(0) && !s.has_page_text(1));
+    }
+
+    #[test]
+    fn pictures_become_a_new_pdf() {
+        // A 2 x 1 pixel PNG (landscape) and a 1 x 2 one.
+        let png = |w: u32, h: u32| {
+            let mut out = Vec::new();
+            {
+                let mut e = png::Encoder::new(&mut out, w, h);
+                e.set_color(png::ColorType::Grayscale);
+                let mut wr = e.write_header().unwrap();
+                wr.write_image_data(&vec![128u8; (w * h) as usize]).unwrap();
+            }
+            PdfImage::from_bytes(&out).unwrap()
+        };
+        let dir = std::env::temp_dir().join(format!("edits-pages-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("pictures.pdf");
+        images_to_pdf(vec![png(2, 1), png(1, 2)], Some((595.0, 842.0)), &target).unwrap();
+        let f = PdfFile::open(std::fs::read(&target).unwrap()).unwrap();
+        let pages = f.pages().unwrap();
+        assert_eq!(pages.len(), 2, "the empty base page is left out");
+        let size = |i: usize| page_dict(&f, pages[i]).unwrap().get(b"MediaBox").and_then(Obj::numbers).unwrap();
+        assert_eq!(size(0), [0.0, 0.0, 842.0, 595.0], "turned for a wide picture");
+        assert_eq!(size(1), [0.0, 0.0, 595.0, 842.0]);
+        assert!(!super::super::temp_path_for(&target).with_extension("edits-base").exists());
     }
 }

@@ -16,5 +16,9 @@ This product includes third-party software:
   1.1, copyright 2017 IBM Corp. Bundled for text boxes and stamps; subsets
   of it are embedded in PDFs edits writes. Licence: licenses/OFL-IBM-Plex.txt.
 
-OCR models (from M5) come from the arabic-ocr project under CC BY-SA 4.0;
-its attribution will be reproduced here when they are added.
+- Text recognition models (detector-v2.onnx, recognizer-v6b-int8.onnx) from
+  arabic-ocr (https://github.com/youssef-mhmd/arabic-ocr), Creative Commons
+  Attribution-ShareAlike 4.0 International (CC BY-SA 4.0). See
+  licenses/ocr-models.txt for what they were trained on and its attribution.
+- ONNX Runtime (https://onnxruntime.ai), MIT, copyright Microsoft Corporation,
+  with the notices in licenses/onnxruntime-ThirdPartyNotices.txt.

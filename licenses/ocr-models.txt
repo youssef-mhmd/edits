@@ -1,0 +1,21 @@
+Text recognition models in edits
+
+The models detector-v2.onnx and recognizer-v6b-int8.onnx (in the ocr folder
+next to edits.exe) come unchanged from arabic-ocr,
+https://github.com/youssef-mhmd/arabic-ocr (commit 54951a3, release v1.0.0).
+
+They are released under the Creative Commons Attribution-ShareAlike 4.0
+International license (CC BY-SA 4.0),
+https://creativecommons.org/licenses/by-sa/4.0/
+
+They were trained on images rendered from, and real scans transcribed by:
+- Arabic, Persian and Urdu Wikipedia, by Wikipedia contributors (CC BY-SA 4.0),
+  https://www.wikipedia.org
+- Arabic, Persian and Urdu Wikisource, by Wikisource contributors (CC BY-SA 4.0),
+  https://wikisource.org; scans of public-domain books from Wikimedia Commons
+- The Tanzil Quran text, Copyright (C) 2007-2025 Tanzil Project, CC BY 3.0,
+  https://tanzil.net
+- Fonts under the SIL Open Font License 1.1 (used for rendering only; no font
+  is included in the models)
+
+Details: data/LICENSES.md in the arabic-ocr source repository.

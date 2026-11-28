@@ -36,7 +36,13 @@
       "../vendor/pdfium/licenses/": "licenses/pdfium/",
       "../NOTICE": "NOTICE.txt",
       "../licenses/third-party.txt": "licenses/third-party.txt",
-      "../crates/edits-text/fonts/OFL.txt": "licenses/OFL-IBM-Plex.txt"
+      "../crates/edits-text/fonts/OFL.txt": "licenses/OFL-IBM-Plex.txt",
+      "../vendor/ocr/onnxruntime.dll": "ocr/onnxruntime.dll",
+      "../vendor/ocr/detector-v2.onnx": "ocr/detector-v2.onnx",
+      "../vendor/ocr/recognizer-v6b-int8.onnx": "ocr/recognizer-v6b-int8.onnx",
+      "../vendor/ocr/onnxruntime-LICENSE.txt": "licenses/onnxruntime.txt",
+      "../vendor/ocr/onnxruntime-ThirdPartyNotices.txt": "licenses/onnxruntime-ThirdPartyNotices.txt",
+      "../licenses/ocr-models.txt": "licenses/ocr-models.txt"
     },
     "licenseFile": "../LICENSE",
     "createUpdaterArtifacts": true,

@@ -165,20 +165,30 @@ Notes:
 
 ## M5: OCR and PDFs from scans (release 0.5)
 
-- [ ] `edits-ocr` crate: ONNX Runtime through `ort`, models loaded on first use
-- [ ] Port from arabic-ocr: preprocess, detector post-processing, line cropping, recognizer and CTC decoding, layout and reading order, bidi, lexicon correction
-- [ ] `charset` generated from arabic-ocr's Python source
-- [ ] Parity tests against stored arabic-ocr output (same text, boxes within 2 px)
-- [ ] CER on arabic-ocr's test sets matches its published numbers
-- [ ] Invisible text layer written to the PDF (searchable PDF)
-- [ ] Background OCR: visible pages first, progress, cancel, page range
-- [ ] Offer OCR when a page has no text
-- [ ] Options: diacritics, digit style
-- [ ] Snip a region and copy its text
-- [ ] Create PDF from images: order, page size, optional OCR
-- [ ] Model attribution in About and licenses
+- [x] `edits-ocr` crate: ONNX Runtime through `ort`, models loaded on first use *(ort 2.0.0-rc.13 with load-dynamic: onnxruntime.dll 1.31.1, the same build arabic-ocr runs, is loaded on the first read; `scripts/fetch-ocr.ps1` puts it and the models in vendor/ocr)*
+- [x] Port from arabic-ocr: preprocess, detector post-processing, line cropping, recognizer and CTC decoding, layout and reading order, bidi, lexicon correction *(page mode; photo mode is not needed for PDFs)*
+- [x] `charset` generated from arabic-ocr's Python source *(`scripts/gen-charset.py`, with each symbol's bidi class and category)*
+- [ ] Parity tests against stored arabic-ocr output (same text, boxes within 2 px) *(`edits-bench ocr-parity`: 12 of 14 pages identical, 322 of 324 lines; see notes)*
+- [x] CER on arabic-ocr's test sets matches its published numbers *(`scripts/ocr-cer.py`, all 394 pages of the 8 real sets, scored by arabic-ocr's own eval code: the same as arabic-ocr run on the same pages in every set, to 0.01%; see notes)*
+- [x] Invisible text layer written to the PDF (searchable PDF) *(`session/ocr.rs`: per page, like headers and footers; one undo step per OCR run; saved as part of the file)*
+- [x] Background OCR: visible pages first, progress, cancel, page range *(`src-tauri/src/ocr.rs`: one OCR thread, pages rendered at 300 dpi at a priority below tiles, results added in batches; the pages on screen move to the front as the reader scrolls)*
+- [x] Offer OCR when a page has no text *(once per document, a bar above the page)*
+- [x] Options: diacritics, digit style *(and leave pages that already have text; kept in the settings)*
+- [x] Snip a region and copy its text *(the ⬚ tool: drag a box; read at 300 dpi and copied)*
+- [x] Create PDF from images: order, page size, optional OCR *(start screen, "PDF from pictures…": JPEG and PNG, A4, Letter, A5 or each picture's shape; the new file opens and its text is recognised in the background)*
+- [x] Model attribution in About and licenses *(NOTICE, licenses/ocr-models.txt, Settings > Third-party software; the runtime and models are bundled in `ocr/` next to edits.exe)*
 
 Done when: a scanned Arabic book becomes searchable, selection and copy give correct logical-order text, and OCR never blocks scrolling.
+
+Notes:
+- Parity method: `scripts/ocr-golden.py` (run in arabic-ocr's environment) stores, for 14 real test pages from 8 sets, the grayscale page (corpus/files/ocr) and each step's result (tests/ocr): deskew angle, line boxes, symbols read, final page. The image operations are checked one by one against OpenCV's own output (`scripts/ocr-cv-fixtures.py`, tests/ocr/cv, 407 cases, `cargo test -p edits-ocr`).
+- arabic-ocr runs OpenCV 5.0 with Intel IPP. Warps, area resize, morphology, Otsu, gray conversion and minAreaRect (float32 rotating calipers over OpenCV's hull order) match byte for byte; the Gaussian adaptive threshold within a few pixels. Cubic resize (line images under 64 px tall) is done by IPP, which is closed: a float64 version matches it on all but about 5 pixels in a million, by one level. That is the one remaining difference: 2 of 324 lines read one character differently (0.006% of characters). Deskew, line boxes (0.00 px) and every crop are identical.
+- Speed: 0.9 s per page on this machine (Python 0.55 s).
+- CER (no diacritics; edits-ocr = arabic-ocr on every set): printed Arabic 1.40% (1.50% with diacritics), UI screenshots 0.85%, Persian modern scans 3.07% (`--only modern=true`), Persian digital 0.18%, Urdu digital 0.27%. These are arabic-ocr's published numbers. Other sets: screens 2.96%, screens_v2 3.53% (3.54% in edits: the cubic-resize difference), all Persian scans 16.15%, all Urdu scans 39.70%.
+- Text layer (`session/ocr.rs`): words in display order with brackets mirrored (PDFium mirrors them back for right-to-left text), glyphless font, render mode 3. `edits-bench ocr-pdf SRC OUT` reads pages at 300 dpi, writes the layer, and reads the text back: on scan_original.pdf 0.19% of characters differ, all from `%` beside numbers (arabic-ocr's reduced bidi writes `%8`, the reader's UAX #9 gives `8%`, which is what a person types).
+- Diacritics in the text layer have no advance and sit over the middle of their letter (`shown_codes`), so readers that place marks by position (edits' own `reading.rs`) find them; the stream order stays what PDFium expects. `reading.rs` now prefers a letter on the mark's own line when one on the next line is as near (OCR boxes are tall and lines close). On three pages of a fully voweled school book (Arabic_language_prep2_t1.pdf, pages 10 to 12), the text read back matches the recognised text word for word on pages 10 and 11 (after Unicode normalisation; 7 of 306 words differ on page 10, dotted answer lines and single letters). Known limit: on page 12, a poster-like title page, a large title and the smaller line just under it are read as one line.
+- OCR never blocks scrolling (`tests/ui/ocr-scroll.json`, a 15-page scan): scroll frame interval p95 7.1 ms while reading text (7.2 ms without), longest frame 11.6 ms. Pages read at about 1.8 s each with 4 threads. Benchmarks after the change: images-10mb and large-1000p-500mb pass everything but memory, as before (cold start 423 ms, first page 554 ms, sharp after scroll p95 20 ms, zoom p95 57 ms; engine numbers unchanged).
+- Still open: parity is 12 of 14 pages identical (the closed IPP cubic resize, see above), so its box stays unticked; the reference-machine check of OCR speed; checking a searchable PDF in Acrobat Reader and Chrome (owner check).
 
 ## M6: Blank canvas editor (release 0.6)
 

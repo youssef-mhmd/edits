@@ -647,6 +647,25 @@ impl Engine {
         self.reopen(doc, None, Some(tail))
     }
 
+    /// Like [`Engine::set_overlay`], for an update that gives `pages` new
+    /// text (recognised text): their indexed text is read again.
+    pub fn set_overlay_text(
+        &self,
+        doc: DocId,
+        tail: Option<std::sync::Arc<Vec<u8>>>,
+        pages: Vec<u32>,
+    ) -> Result<(), EngineError> {
+        self.reopen(doc, None, Some(tail))?;
+        self.call(doc, CONTROL_PRIORITY, move |od| {
+            for p in pages {
+                if let Some(t) = od.texts.get_mut(p as usize) {
+                    *t = None;
+                }
+            }
+            Ok(())
+        })
+    }
+
     /// Like [`Engine::set_overlay`], for an update that adds, removes,
     /// reorders or reshapes pages: the text index is dropped and the new
     /// page list is returned.

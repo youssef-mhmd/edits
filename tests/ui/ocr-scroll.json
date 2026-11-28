@@ -1,0 +1,13 @@
+[
+  {
+    "eval": "window.__scroll = (ms) => new Promise((res) => { const v = __viewer; const out = []; let last = performance.now(); const end = last + ms; const f = (now) => { out.push(now - last); last = now; v.scroller.scrollTop += 12; if (now < end) requestAnimationFrame(f); else { out.sort((a, b) => a - b); res({ frames: out.length, p50: +out[Math.floor(out.length * 0.5)].toFixed(1), p95: +out[Math.floor(out.length * 0.95)].toFixed(1), max: +out[out.length - 1].toFixed(1) }); } }; requestAnimationFrame(f); }); __viewer.goToPage(0);",
+    "wait": 2000
+  },
+  { "eval": "0", "wait": 100, "log": "__scroll(4000)" },
+  { "eval": "__viewer.goToPage(0); [...document.querySelectorAll('.ctxbar button')].find(b => b.textContent.trim() === 'Recognise text…').click()", "wait": 400 },
+  { "eval": "document.querySelector('.dlg .primary').click()", "wait": 3000, "log": "document.querySelector('.ocr-run')?.textContent.trim() ?? 'not running'" },
+  { "eval": "0", "wait": 100, "log": "__scroll(4000)" },
+  { "eval": "0", "wait": 100, "log": "__scroll(4000)" },
+  { "eval": "0", "wait": 100, "log": "[document.querySelector('.ocr-run')?.textContent.trim() ?? 'not running', __viewer.currentPage()]", "shot": "ocr-scroll" },
+  { "eval": "[...document.querySelectorAll('.ocr-run button')][0]?.click()", "wait": 500, "log": "document.querySelector('.ocr-run')?.textContent.trim() ?? 'stopped'" }
+]
