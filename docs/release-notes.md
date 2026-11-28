@@ -1,5 +1,17 @@
 # Release notes
 
+## 0.5.0 (2026-11-28)
+
+Text recognition for scanned pages.
+
+- Recognise text: scanned pages in Arabic, Persian or Urdu become searchable, and their text can be selected and copied. The text is added to the pages, invisible, over the picture, and is saved with the file.
+- It works in the background: the pages you are looking at are read first, you can keep reading, and Stop ends it at any time. Undo takes the text away until you save.
+- Choose the pages, keep or drop diacritics, and choose how digits come out. Pages that already have text are left alone.
+- When a page has no text, edits offers to recognise it.
+- Copy text from an area: draw a box over part of a page and its text is copied.
+- Make a PDF from pictures (JPEG and PNG): in order, on A4, Letter, A5 or pages the shape of each picture, with text recognised if you like.
+- Copying voweled Arabic text keeps each diacritic on its own letter.
+
 ## 0.4.0 (2026-11-27)
 
 Forms and signing.

@@ -1032,7 +1032,7 @@ dependencies = [
 
 [[package]]
 name = "edits"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "edits-core",
  "edits-edit",
@@ -1054,7 +1054,7 @@ dependencies = [
 
 [[package]]
 name = "edits-bench"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "edits-core",
  "edits-edit",
@@ -1068,7 +1068,7 @@ dependencies = [
 
 [[package]]
 name = "edits-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "edits-edit",
  "log",
@@ -1084,7 +1084,7 @@ dependencies = [
 
 [[package]]
 name = "edits-edit"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "aes",
  "edits-text",
@@ -1099,7 +1099,7 @@ dependencies = [
 
 [[package]]
 name = "edits-ocr"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "flate2",
  "ort",
@@ -1111,7 +1111,7 @@ dependencies = [
 
 [[package]]
 name = "edits-text"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "rustybuzz",
  "subsetter",
