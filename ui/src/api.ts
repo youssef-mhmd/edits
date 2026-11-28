@@ -454,3 +454,73 @@ export const ocrFirst = (doc: number, pages: number[]) => invoke<void>("ocr_firs
 export const ocrCancel = (doc: number) => invoke<void>("ocr_cancel", { doc });
 export const ocrRegion = (doc: number, page: number, rect: number[], options: OcrOptions) =>
   invoke<string>("ocr_region", { doc, page, rect, options });
+
+// ------------------------------------------------------------ page items
+
+export interface TextStyle {
+  /** Font family; empty for the bundled IBM Plex Sans Arabic. */
+  font: string;
+  bold: boolean;
+  italic: boolean;
+  size: number;
+  color: number[];
+  align: "start" | "left" | "center" | "right";
+  /** null: from the text; true: right to left. */
+  rtl: boolean | null;
+  line_height: number;
+}
+
+export interface TableData {
+  widths: number[];
+  heights: number[];
+  cells: string[][];
+  style: TextStyle;
+  rtl: boolean;
+  border: number[];
+  border_width: number;
+  header: number[] | null;
+  padding: number;
+}
+
+export type ItemKind =
+  | {
+      type: "text";
+      text: string;
+      style: TextStyle;
+      fill: number[] | null;
+      border: number[] | null;
+      border_width: number;
+      padding: number;
+    }
+  | { type: "image"; image: number }
+  | { type: "shape"; ellipse: boolean; stroke: number[] | null; width: number; fill: number[] | null }
+  | { type: "line"; flip: boolean; reverse: boolean; color: number[]; width: number; arrow: boolean }
+  | ({ type: "table" } & TableData);
+
+/** A page item: text box, picture, shape, line or table, placed as page content. */
+export interface ItemView {
+  /** 0 for a new item. */
+  id: number;
+  /** Left, top, right, bottom in page fractions. */
+  rect: number[];
+  group: number | null;
+  kind: ItemKind;
+  /** Pictures: their size in pixels. */
+  pixels?: [number, number] | null;
+}
+
+export interface ItemsChanged extends Changed {
+  items: ItemView[];
+}
+
+export const itemsPage = (doc: number, page: number) => invoke<ItemView[]>("items_page", { doc, page });
+export const itemsSet = (doc: number, page: number, items: ItemView[]) =>
+  invoke<ItemsChanged>("items_set", { doc, page, items });
+export const itemPicture = (doc: number, path: string) =>
+  invoke<{ image: number; pixels: [number, number] }>("item_picture", { doc, path });
+/** Installed fonts text can be set in: [family, has Arabic]. */
+export const fontFamilies = () => invoke<[string, boolean][]>("font_families");
+/** Writes a new document of empty pages; `size` and `margins` in points. */
+export const newDocument = (target: string, size: number[], pages: number, margins: number[]) =>
+  invoke<string>("new_document", { target, size, pages, margins });
+export const docMargins = (doc: number) => invoke<number[] | null>("doc_margins", { doc });

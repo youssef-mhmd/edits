@@ -543,3 +543,143 @@ pub fn object(path: &Path, num: u32) -> Res<bool> {
     }
     Ok(true)
 }
+
+/// Writes a new two-page document made only of page items, for checking in
+/// other readers: a flyer (Arabic and English text in two fonts, shapes, a
+/// picture, an arrow) and an invoice (a right-to-left table and totals).
+pub fn items_demo(out: &Path) -> Res<bool> {
+    use edits_edit::{Item, ItemKind, Session, TableItem, TextItem, TextStyle};
+    let (w, h) = (595.28_f32, 841.89_f32);
+    let m = 56.7_f32; // 20 mm
+    std::fs::write(out, edits_edit::blank_pdf(w, h, 2, Some([m; 4])))?;
+    let mut s = Session::open(out)?;
+    let style = |font: &str, size: f32, bold: bool, color: [f32; 3], align: &str| TextStyle {
+        font: font.into(),
+        bold,
+        size,
+        color,
+        align: align.into(),
+        ..TextStyle::default()
+    };
+    let text = |rect: [f32; 4], t: &str, st: TextStyle| Item {
+        id: 0,
+        rect,
+        turn: 0,
+        group: None,
+        kind: ItemKind::Text(TextItem { text: t.into(), style: st, ..TextItem::default() }),
+    };
+    let shape = |rect: [f32; 4], ellipse: bool, fill: Option<[f32; 3]>, stroke: Option<[f32; 3]>| Item {
+        id: 0,
+        rect,
+        turn: 0,
+        group: None,
+        kind: ItemKind::Shape { ellipse, stroke, width: 2.0, fill },
+    };
+    // A small gradient picture.
+    let mut png = Vec::new();
+    {
+        let (pw, ph) = (120u32, 80u32);
+        let mut e = png::Encoder::new(&mut png, pw, ph);
+        e.set_color(png::ColorType::Rgb);
+        let data: Vec<u8> =
+            (0..ph).flat_map(|y| (0..pw).flat_map(move |x| [(40 + x) as u8, (90 + y) as u8, 200u8])).collect();
+        e.write_header()?.write_image_data(&data)?;
+    }
+    let pic = s.add_picture(edits_edit::image::PdfImage::from_bytes(&png)?);
+    let blue = [0.12, 0.33, 0.65];
+    // Page 1: a flyer.
+    s.set_items(
+        0,
+        vec![
+            shape([0.0, h - 220.0, w, h], false, Some([0.12, 0.33, 0.65]), None),
+            text([m, h - 120.0, w - m, h - 60.0], "معرض الكتاب السنوي", style("Arial", 40.0, true, [1.0; 3], "center")),
+            text(
+                [m, h - 180.0, w - m, h - 130.0],
+                "Annual Book Fair — 12 to 20 March",
+                style("", 20.0, false, [1.0; 3], "center"),
+            ),
+            Item {
+                id: 0,
+                rect: [m, 380.0, m + 240.0, 540.0],
+                turn: 0,
+                group: None,
+                kind: ItemKind::Image { image: pic },
+            },
+            shape([w - m - 200.0, 400.0, w - m, 520.0], true, Some([1.0, 0.85, 0.3]), Some(blue)),
+            text(
+                [w - m - 190.0, 430.0, w - m - 10.0, 490.0],
+                "الدخول مجاني\nFree entry",
+                style("Times New Roman", 18.0, true, blue, "center"),
+            ),
+            Item {
+                id: 0,
+                rect: [m + 250.0, 440.0, w - m - 205.0, 460.0],
+                turn: 0,
+                group: None,
+                kind: ItemKind::Line { flip: true, reverse: false, color: blue, width: 3.0, arrow: true },
+            },
+            text(
+                [m, 200.0, w - m, 340.0],
+                "يقام المعرض في القاعة الكبرى، ويضم أكثر من مئتي دار نشر عربية وأجنبية، مع ندوات يومية وأنشطة للأطفال.",
+                style("Tahoma", 14.0, false, [0.1; 3], "start"),
+            ),
+            Item {
+                id: 0,
+                rect: [m, 150.0, w - m, 150.0],
+                turn: 0,
+                group: None,
+                kind: ItemKind::Line { flip: false, reverse: false, color: [0.6; 3], width: 1.0, arrow: false },
+            },
+            text(
+                [m, 80.0, w - m, 140.0],
+                "www.example.org · 0100 000 0000",
+                style("", 11.0, false, [0.4; 3], "center"),
+            ),
+        ],
+    )?;
+    // Page 2: an invoice.
+    let table = TableItem {
+        widths: vec![230.0, 70.0, 90.0, 91.0],
+        heights: vec![22.0; 5],
+        cells: vec![
+            vec!["البند Item".into(), "الكمية Qty".into(), "السعر Price".into(), "المجموع Total".into()],
+            vec!["تصميم شعار Logo design".into(), "1".into(), "1,500".into(), "1,500".into()],
+            vec!["بطاقات عمل Business cards (500)".into(), "2".into(), "250".into(), "500".into()],
+            vec!["لافتة Banner 2×1 m".into(), "1".into(), "800".into(), "800".into()],
+            vec!["".into(), "".into(), "الإجمالي Total".into(), "2,800".into()],
+        ],
+        style: style("Arial", 10.0, false, [0.0; 3], "start"),
+        rtl: true,
+        header: Some([0.85, 0.9, 0.97]),
+        ..TableItem::default()
+    };
+    s.set_items(
+        1,
+        vec![
+            text([m, h - 110.0, w - m, h - 60.0], "فاتورة Invoice", style("Arial", 28.0, true, blue, "start")),
+            text(
+                [m, h - 190.0, 300.0, h - 120.0],
+                "Bill to: Nour Trading Co.\nCairo, Egypt",
+                style("", 11.0, false, [0.1; 3], "left"),
+            ),
+            text(
+                [w - m - 200.0, h - 190.0, w - m, h - 120.0],
+                "رقم الفاتورة: ٢٠٢٦-٠١٢\nالتاريخ: ٢٨ نوفمبر ٢٠٢٦",
+                style("Tahoma", 11.0, false, [0.1; 3], "right"),
+            ),
+            Item { id: 0, rect: [m, h - 230.0, m, h - 230.0], turn: 0, group: None, kind: ItemKind::Table(table) },
+            text(
+                [m, 120.0, w - m, 180.0],
+                "شكرًا لتعاملكم معنا. Thank you for your business.",
+                style("", 12.0, false, [0.3; 3], "center"),
+            ),
+        ],
+    )?;
+    let len = s.save(out)?;
+    println!("{}: {len} bytes", out.display());
+    // Reopened, the items are items again.
+    let mut again = Session::open(out)?;
+    let (a, b) = (again.items(0).len(), again.items(1).len());
+    println!("items after reopening: {a} and {b}");
+    Ok(a == 10 && b == 5)
+}

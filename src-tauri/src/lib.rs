@@ -7,6 +7,7 @@
 mod bench;
 mod edit;
 mod forms;
+mod items;
 mod nav;
 mod ocr;
 mod pages;
@@ -274,6 +275,12 @@ pub fn run() {
             state::load_signatures,
             state::save_signatures,
             state::picture_data_url,
+            items::items_page,
+            items::items_set,
+            items::item_picture,
+            items::font_families,
+            items::new_document,
+            items::doc_margins,
             ocr::ocr_available,
             ocr::ocr_start,
             ocr::ocr_first,

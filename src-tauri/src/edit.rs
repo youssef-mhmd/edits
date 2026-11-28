@@ -295,8 +295,17 @@ pub(crate) fn changed(
     pages: Vec<u32>,
     id: Option<AnnotId>,
 ) -> Result<Changed, String> {
+    let redraw = s.take_redraw();
+    let mut pages = pages;
     let info = if s.take_layout_changed() {
         Some(engine.set_overlay_pages(doc, s.tail()).map_err(|e| e.to_string())?)
+    } else if !redraw.is_empty() {
+        // Their text may have changed too (headers, recognised text, text boxes).
+        engine.set_overlay_text(doc, s.tail(), redraw.clone()).map_err(|e| e.to_string())?;
+        pages.extend(redraw);
+        pages.sort_unstable();
+        pages.dedup();
+        None
     } else {
         show(engine, doc, s)?;
         None
@@ -582,6 +591,7 @@ pub async fn save_doc(app: tauri::AppHandle, doc: DocId, path: Option<String>) -
         s.save(&target).map_err(|e| format!("could not save {}: {e}", target.display()))?;
         // The saved file shows the pages as they were shown.
         s.take_layout_changed();
+        s.take_redraw();
         forget_recovery(&before);
         persist(s);
         engine.reload(doc, Some(target.clone())).map_err(|e| e.to_string())?;
@@ -659,6 +669,8 @@ pub(crate) fn commit_ocr(
     }
     let pages: Vec<u32> = layers.iter().map(|l| l.0).collect();
     s.set_page_text(run, layers).map_err(|e| e.to_string())?;
+    // The layer is invisible: nothing to draw again, only text to read again.
+    s.take_redraw();
     state.engine.set_overlay_text(doc, s.tail(), pages).map_err(|e| e.to_string())?;
     persist(s);
     Ok(s.status())

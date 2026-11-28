@@ -10,6 +10,7 @@
 //! edits-bench text FILE [PAGE]                   print a page's text as PDFium gives it (logical order check)
 //! edits-bench search FILE QUERY                 search timing, cold and indexed (PRD 7)
 //! edits-bench annot-demo SRC OUT              a copy of SRC with every kind of annotation edits makes
+//! edits-bench items-demo OUT                 a flyer and an invoice made of page items, Arabic and English
 //! edits-bench save FILE                        incremental save timing, on a copy (PRD 7)
 //! edits-bench text-check [DIR]                  page text against tests/text (reading order regressions)
 //! edits-bench check [DIR]                          open and render every corpus file, one process each
@@ -109,6 +110,10 @@ fn main() -> ExitCode {
         "pages-demo" => match (args.first(), args.get(1)) {
             (Some(a), Some(b)) => core_bench::pages_demo(Path::new(a), Path::new(b)),
             _ => Err("pages-demo needs SRC OUT".into()),
+        },
+        "items-demo" => match args.first() {
+            Some(o) => core_bench::items_demo(Path::new(o)),
+            None => Err("items-demo needs OUT".into()),
         },
         "save" => match args.first() {
             Some(f) => core_bench::save(&PathBuf::from(f)),

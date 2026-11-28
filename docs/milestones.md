@@ -192,14 +192,22 @@ Notes:
 
 ## M6: Blank canvas editor (release 0.6)
 
-- [ ] New document: page size, orientation, margins
-- [ ] Place text boxes, images, shapes, lines as real page content (not annotations)
-- [ ] Text box formatting: font, size, colour, alignment, direction
-- [ ] Simple tables
-- [ ] Alignment guides, snapping, grouping, z-order
-- [ ] Same tools work on pages of existing PDFs (add content)
+- [x] New document: page size, orientation, margins *(start screen or Ctrl N: A4, A5, A3, Letter, Legal or custom, portrait or landscape, margins kept in the file for the guides, number of pages)*
+- [x] Place text boxes, images, shapes, lines as real page content (not annotations) *(`session/items.rs`: drawn in one content stream per page; saved with the list in /PieceInfo so they are items again when the file is reopened)*
+- [x] Text box formatting: font, size, colour, alignment, direction *(installed Windows fonts that may be embedded, plus IBM Plex Sans Arabic regular and bold; bold, italic; characters a font lacks come from Plex)*
+- [x] Simple tables *(rows grow to fit; heading row; right-to-left tables; edited in a dialog)*
+- [x] Alignment guides, snapping, grouping, z-order *(snaps to page edges and middle, margins and other items; Alt turns it off; Ctrl G, Ctrl ] and [ with Shift for front and back; line up; arrows nudge)*
+- [x] Same tools work on pages of existing PDFs (add content)
 
 Done when: a one-page flyer and a simple invoice can be made from scratch in Arabic and English.
+
+Notes:
+- Fonts (`edits-text`): a registry of fonts (Plex regular and bold built in, installed TrueType fonts loaded on first use, `system.rs` lists the ones whose licence allows embedding); text records each glyph's font, and PDF output embeds a subset per font. CFF-based OpenType fonts are not offered yet.
+- Content changes (headers, recognised text, items) no longer show the document anew: the session reports the pages to draw again (`take_redraw`) and the engine reads their text again. Undo of a page-list change that only changes content works the same way.
+- `edits-bench items-demo OUT` writes a flyer and an invoice made only of items, in Arabic and English with four fonts, a picture, shapes, an arrow and a right-to-left table, saves, and checks the items come back on reopening. UI: `tests/ui/items.json` (text box, rectangle, arrow, table through its dialog, moving with snapping, undo).
+- Checks: `pages-check` and `forms-check` pass on the corpus; UI scenarios organize, annotate, forms, tools, ocr and items pass. `edits-bench app`: scroll, sharpness and zoom unchanged (scroll p95 7.1 ms, sharp p95 18.5 ms, zoom p95 48 ms); start-up and memory were measured with the user's installed edits open, which shares WebView2, so they are not comparable this time.
+- Known limits: edits' own text reading decides a line's direction by its majority of letters, so a line mixing a short Arabic word with longer English reads back in English order (the page shows it correctly). Items on a page turned with /Rotate are drawn upright but have not been tried in the interface yet.
+- Still to do for "done when": the owner makes a flyer and an invoice by hand in the app, and checks `items-demo` output in Acrobat Reader and Chrome.
 
 ## M7: Edit existing content (release 0.7)
 
