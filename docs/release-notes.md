@@ -1,5 +1,17 @@
 # Release notes
 
+## 0.6.0 (2026-11-28)
+
+Make documents from scratch, and a new look.
+
+- New document (Ctrl N): choose the page size (A4, A5, A3, Letter, Legal or your own), portrait or landscape, margins and the number of pages.
+- Add text boxes, pictures, rectangles, ellipses, lines, arrows and tables to any page, as real page content. They stay editable when you open the file again in edits.
+- Text boxes: any font on your computer that may be embedded, or IBM Plex Sans Arabic; size, bold, italic, colour, alignment and direction. Arabic and English mix in one box.
+- Tables: rows grow to fit their text, a heading row, right-to-left tables.
+- Guides and snapping to the page edges, the middle, the margins and other items (hold Alt to turn it off); group (Ctrl G), bring forward and send back, line up, and nudge with the arrow keys.
+- A new look: a ribbon with Home, Insert, Comment and View tabs (and Format when page items are chosen), a status bar with the page number, page layout and a zoom slider, a start page with large buttons and your recent files, and a new settings window.
+- A new icon for edits, and PDF files that edits opens get their own icon.
+
 ## 0.5.0 (2026-11-28)
 
 Text recognition for scanned pages.
